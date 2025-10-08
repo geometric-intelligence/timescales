@@ -160,6 +160,19 @@ class MultiTimescaleRNN(nn.Module):
                     timescales = min_timescale * torch.pow(
                         power_term, 1.0 / exponent_term
                     )
+            elif distribution == "gaussian":
+                # Gaussian (normal) distribution
+                mean = float(timescales_config["mean"])
+                std = float(timescales_config["std"])
+                
+                # Generate samples from normal distribution
+                timescales = torch.normal(mean, std, size=(hidden_size,))
+                
+                # Ensure all timescales are positive by clipping to a small minimum value
+                # This prevents numerical issues with negative or zero timescales
+                min_timescale = timescales_config.get("min_timescale", 0.01)
+                max_timescale = timescales_config.get("max_timescale", 1.0)
+                timescales = torch.clamp(timescales, min=min_timescale, max=max_timescale)
 
             else:
                 raise ValueError(f"Unknown continuous distribution: {distribution}")

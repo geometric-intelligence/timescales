@@ -1,0 +1,74 @@
+# Base configuration to inherit from
+base_config: "configs/mts.yaml"
+
+# Number of seeds per configuration
+n_seeds: 2
+
+# Parameter sweep configurations
+experiments:
+  - name: "discrete_single_005"
+    overrides:
+      timescales_config:
+        type: "discrete"
+        values: [1.95] # 0.05 alpha
+
+  - name: "discrete_single_01"
+    overrides:
+      timescales_config:
+        type: "discrete"
+        values: [0.949] # 0.1 alpha
+
+  - name: "discrete_single_02"
+    overrides:
+      timescales_config:
+        type: "discrete"
+        values: [0.448] # 0.2 alpha
+      
+
+  - name: "discrete_single_03"
+    overrides:
+      timescales_config:
+        type: "discrete"
+        values: [0.280] # 0.3 alpha
+
+  - name: "discrete_single_04"
+    overrides:
+      timescales_config:
+        type: "discrete"
+        values: [0.196] # 0.4 alpha
+
+  - name: "discrete_single_05"
+    overrides:
+      timescales_config:
+        type: "discrete"
+        values: [0.144] # 0.5 alpha
+
+  - name: "discrete_single_06"
+    overrides:
+      timescales_config:
+        type: "discrete"
+        values: [0.109] # 0.6 alpha
+
+  - name: "discrete_single_07"
+    overrides:
+      timescales_config:
+        type: "discrete"
+        values: [0.083] # 0.7 alpha
+
+  - name: "discrete_single_08"
+    overrides:
+      timescales_config:
+        type: "discrete"
+        values: [0.062] # 0.8 alpha
+
+  - name: "discrete_single_09"
+    overrides:
+      timescales_config:
+        type: "discrete"
+        values: [0.043] # 0.9 alpha
+
+  - name: "discrete_single_10"
+    overrides:
+      timescales_config:
+        type: "discrete"
+        values: [0.01] # 1.0 alpha
