@@ -8,6 +8,75 @@ from typing import Optional, Tuple
 from .sweep_evaluator import SweepResult
 
 
+def create_color_mapping(
+    models: dict, 
+    colormap: str, 
+    config_path: list[str] | str
+    ):
+    """
+    Create a color mapping for experiments based on a config variable.
+    
+    Args:
+        models: Models dictionary from load_experiment_sweep
+        colormap: Name of matplotlib colormap (e.g., 'viridis', 'plasma')
+        config_path: List of keys to access value in config, e.g., ['timescales_config', 'std']
+                     or string with dot notation, e.g., 'timescales_config.std'
+    
+    Returns:
+        dict: Mapping from experiment name to color (exp_name -> rgba tuple)
+    
+    Example:
+        colors = create_color_mapping(models_mean_03, 'viridis', ['timescales_config', 'std'])
+        plot_training_curves_sweep(models_mean_03, colors=colors)
+    """
+    import matplotlib.pyplot as plt
+    
+    # Convert string path to list if needed
+    if isinstance(config_path, str):
+        config_path = config_path.split('.')
+    
+    # Extract values for each experiment
+    exp_values = {}
+    for exp_name, seeds in models.items():
+        # Get config from first seed (seed 0)
+        seed_0_data = seeds[0] if 0 in seeds else list(seeds.values())[0]
+        config = seed_0_data['config']
+        
+        # Navigate through nested config
+        value = config
+        try:
+            for key in config_path:
+                value = value[key]
+            exp_values[exp_name] = value
+        except (KeyError, TypeError) as e:
+            print(f"Warning: Could not access {config_path} for {exp_name}: {e}")
+            exp_values[exp_name] = 0.0  # fallback
+    
+    # Sort by value
+    sorted_items = sorted(exp_values.items(), key=lambda x: x[1])
+    values = [v for _, v in sorted_items]
+    
+    # Create color mapping
+    cmap = plt.cm.get_cmap(colormap)
+
+    if isinstance(values, list):
+        values = np.array(values)
+        print(values)
+        
+    
+    if len(values) > 1 and max(values) != min(values):
+        value_min, value_max = min(values), max(values)
+        color_mapping = {
+            exp_name: cmap((value - value_min) / (value_max - value_min))
+            for exp_name, value in sorted_items
+        }
+    else:
+        # All same value or only one experiment
+        color_mapping = {exp_name: cmap(0.5) for exp_name, _ in sorted_items}
+    
+    return color_mapping
+
+
 def plot_sweep_results(
     sweep_result: SweepResult,
     figsize: Tuple[int, int] = (10, 6),
@@ -15,6 +84,7 @@ def plot_sweep_results(
     show_training_length: bool = True,
     log_x: bool = False,
     log_y: bool = False,
+    colors: Optional[dict | list] = None,
 ) -> None:
     """
     Plot sweep evaluation results (e.g., OOD generalization).
@@ -26,20 +96,32 @@ def plot_sweep_results(
         show_training_length: Whether to show vertical line at training length
         log_x: Use log scale on x-axis
         log_y: Use log scale on y-axis
+        colors: Optional dict mapping exp_name -> color, or list of colors
     """
     fig, ax = plt.subplots(figsize=figsize)
 
-    # Color palette
-    colors = plt.cm.tab10(np.linspace(0, 1, len(sweep_result.experiment_results)))
+    # Handle color specification
+    if colors is None:
+        # Default: use tab10 colormap
+        default_colors = plt.cm.tab10(np.linspace(0, 1, len(sweep_result.experiment_results)))
+        color_dict = {exp_name: default_colors[i] for i, exp_name in enumerate(sweep_result.experiment_results.keys())}
+    elif isinstance(colors, dict):
+        # Use provided color dictionary
+        color_dict = colors
+    else:
+        # colors is a list
+        color_dict = {exp_name: colors[i] for i, exp_name in enumerate(sweep_result.experiment_results.keys())}
 
-    for i, (exp_name, exp_result) in enumerate(sweep_result.experiment_results.items()):
+    for exp_name, exp_result in sweep_result.experiment_results.items():
+        color = color_dict.get(exp_name, 'black')  # fallback to black if not found
+        
         x = exp_result.test_conditions
         y_mean = exp_result.mean_measurements
         y_std = exp_result.std_measurements
 
         # Plot mean line
         ax.plot(
-            x, y_mean, "-o", color=colors[i], linewidth=2, markersize=6, label=exp_name
+            x, y_mean, "-o", color=color, linewidth=2, markersize=6, label=exp_name
         )
 
         if log_x:
@@ -52,7 +134,7 @@ def plot_sweep_results(
             x,
             np.array(y_mean) - np.array(y_std),
             np.array(y_mean) + np.array(y_std),
-            color=colors[i],
+            color=color,
             alpha=0.2,
         )
 
@@ -97,6 +179,7 @@ def plot_training_curves_sweep(
     log_x: bool = False,
     log_y: bool = False,
     save_path: Optional[str] = None,
+    colors: Optional[dict | list] = None,
 ) -> None:
     """
     Plot training curves for an entire sweep.
@@ -108,12 +191,25 @@ def plot_training_curves_sweep(
         log_x: Use log scale on x-axis
         log_y: Use log scale on y-axis
         save_path: Optional path to save figure
+        colors: Optional dict mapping exp_name -> color, or list of colors
     """
     fig, ax = plt.subplots(figsize=figsize)
 
-    colors = plt.cm.tab10(np.linspace(0, 1, len(sweep)))
+    # Handle color specification
+    if colors is None:
+        # Default: use tab10 colormap
+        default_colors = plt.cm.tab10(np.linspace(0, 1, len(sweep)))
+        color_dict = {exp_name: default_colors[i] for i, exp_name in enumerate(sweep.keys())}
+    elif isinstance(colors, dict):
+        # Use provided color dictionary
+        color_dict = colors
+    else:
+        # colors is a list
+        color_dict = {exp_name: colors[i] for i, exp_name in enumerate(sweep.keys())}
 
-    for i, (exp_name, seeds) in enumerate(sweep.items()):
+    for exp_name, seeds in sweep.items():
+        color = color_dict.get(exp_name, 'black')  # fallback to black if not found
+        
         # Collect data from all seeds
         all_curves = []
         epochs = None
@@ -187,12 +283,12 @@ def plot_training_curves_sweep(
         else:
             epochs = np.array(epochs[:min_len])
 
-        # Plot mean with shaded std
+        # Plot mean with shaded std - USE color INSTEAD of colors[i]
         ax.plot(
             epochs,
             mean_curve,
             "-",
-            color=colors[i],
+            color=color,  # CHANGED from colors[i]
             linewidth=2,
             label=f"{exp_name} (n={len(all_curves)})",
         )
@@ -200,7 +296,7 @@ def plot_training_curves_sweep(
             epochs,
             mean_curve - std_curve,
             mean_curve + std_curve,
-            color=colors[i],
+            color=color,  # CHANGED from colors[i]
             alpha=0.2,
         )
 
@@ -235,6 +331,7 @@ def plot_final_performance_comparison(
     sweep: dict,
     figsize: Tuple[int, int] = (10, 6),
     save_path: Optional[str] = None,
+    colors: Optional[dict | list] = None,
 ) -> None:
     """
     Bar plot comparing final validation loss and decoding error across experiments.
@@ -243,6 +340,7 @@ def plot_final_performance_comparison(
         sweep: Sweep dictionary loaded from load_experiment_sweep
         figsize: Figure size
         save_path: Optional path to save figure
+        colors: Optional dict mapping exp_name -> color, or list of colors
     """
     exp_names = []
     val_losses_mean = []
@@ -289,6 +387,18 @@ def plot_final_performance_comparison(
             np.std(final_decoding_errors) if final_decoding_errors else 0
         )
 
+    # Handle color specification
+    if colors is None:
+        # Default: use tab10 colormap
+        default_colors = plt.cm.tab10(np.linspace(0, 1, len(exp_names)))
+        color_list = [default_colors[i] for i in range(len(exp_names))]
+    elif isinstance(colors, dict):
+        # Use provided color dictionary
+        color_list = [colors.get(name, 'steelblue') for name in exp_names]
+    else:
+        # colors is a list
+        color_list = list(colors)
+
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
 
     x = np.arange(len(exp_names))
@@ -302,7 +412,7 @@ def plot_final_performance_comparison(
         yerr=val_losses_std,
         capsize=5,
         alpha=0.7,
-        color="steelblue",
+        color=color_list,  # Changed from "steelblue"
     )
     ax1.set_xlabel("Experiment", fontsize=11)
     ax1.set_ylabel("Final Validation Loss", fontsize=11)
@@ -319,7 +429,7 @@ def plot_final_performance_comparison(
         yerr=decoding_errors_std,
         capsize=5,
         alpha=0.7,
-        color="coral",
+        color=color_list,  # Changed from "coral"
     )
     ax2.set_xlabel("Experiment", fontsize=11)
     ax2.set_ylabel("Final Decoding Error (m)", fontsize=11)
