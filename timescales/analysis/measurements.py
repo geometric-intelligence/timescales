@@ -9,8 +9,8 @@ import torch
 from abc import ABC, abstractmethod
 import lightning as L
 
-from pirnns.rnns.rnn import RNN
-from pirnns.rnns.multitimescale_rnn import MultiTimescaleRNN
+from timescales.rnns.rnn import RNN
+from timescales.rnns.multitimescale_rnn import MultiTimescaleRNN
 
 
 class Measurement(ABC):

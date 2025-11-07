@@ -1,7 +1,7 @@
-# Path-Integrating Recurrent Neural Networks (piRNNs)
+# Multi-timescale Recurrent Neural Networks
 
 <h3 align="center">
-    Recurrent Neural Networks that perform path integration:
+    Multi-timescale Recurrent Neural Networks trained on neuroscience tasks:
 </h3>
 
 
@@ -25,8 +25,8 @@
 ### Clone the repository & navigate to the directory:
 
 ```bash
-git clone https://github.com/geometric-intelligence/pirnns.git
-cd pirnns
+git clone https://github.com/geometric-intelligence/timescales.git
+cd timescales
 ```
 
 ### Install Poetry

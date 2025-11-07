@@ -6,9 +6,9 @@ import torch
 import matplotlib.pyplot as plt
 import wandb
 import numpy as np
-from pirnns.rnns.rnn import RNN
-from pirnns.rnns.multitimescale_rnn import MultiTimescaleRNN
-from pirnns.analysis.measurements import PositionDecodingMeasurement
+from timescales.rnns.rnn import RNN
+from timescales.rnns.multitimescale_rnn import MultiTimescaleRNN
+from timescales.analysis.measurements import PositionDecodingMeasurement
 
 
 class LossLoggerCallback(L.Callback):

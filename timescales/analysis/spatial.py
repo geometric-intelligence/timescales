@@ -9,8 +9,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch
 from typing import Tuple, Optional, List
-from pirnns.rnns.rnn import RNN
-from pirnns.rnns.multitimescale_rnn import MultiTimescaleRNN
+from timescales.rnns.rnn import RNN
+from timescales.rnns.multitimescale_rnn import MultiTimescaleRNN
 
 
 class SpatialAnalyzer:

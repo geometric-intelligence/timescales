@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import json
 from collections import defaultdict
-from pirnns.rnns.multitimescale_rnn import MultiTimescaleRNN, MultiTimescaleRNNLightning
+from timescales.rnns.multitimescale_rnn import MultiTimescaleRNN, MultiTimescaleRNNLightning
 
 
 def load_experiment_sweep(

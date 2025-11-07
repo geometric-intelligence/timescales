@@ -8,9 +8,9 @@ import lightning as L
 from unittest.mock import Mock
 from torch.utils.data import DataLoader, TensorDataset
 
-from pirnns.analysis.measurements import Measurement, PositionDecodingMeasurement
-from pirnns.rnns.rnn import RNN
-from pirnns.rnns.multitimescale_rnn import MultiTimescaleRNN
+from timescales.analysis.measurements import Measurement, PositionDecodingMeasurement
+from timescales.rnns.rnn import RNN
+from timescales.rnns.multitimescale_rnn import MultiTimescaleRNN
 
 
 class TestMeasurementBase:

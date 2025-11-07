@@ -14,12 +14,12 @@ from callbacks import (
     TimescaleVisualizationCallback,
 )
 
-from pirnns.analysis.measurements import PositionDecodingMeasurement
+from timescales.analysis.measurements import PositionDecodingMeasurement
 
-from datamodule import PathIntegrationDataModule
+from timescales.datamodule import PathIntegrationDataModule
 
-from pirnns.rnns.rnn import RNN, RNNLightning
-from pirnns.rnns.multitimescale_rnn import MultiTimescaleRNN, MultiTimescaleRNNLightning
+from timescales.rnns.rnn import RNN, RNNLightning
+from timescales.rnns.multitimescale_rnn import MultiTimescaleRNN, MultiTimescaleRNNLightning
 
 import datetime
 

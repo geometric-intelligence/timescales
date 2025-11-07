@@ -1,5 +1,5 @@
 [project]
-name = "pirnns"
+name = "timescales"
 version = "0.1.0"
 description = "Task-Trained RNNs for Path Integration"
 authors = [
