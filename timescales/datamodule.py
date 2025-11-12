@@ -1,7 +1,6 @@
 import lightning as L
 from torch.utils.data import DataLoader
 import torch
-import math
 import numpy as np
 from torch.utils.data import TensorDataset, random_split
 
@@ -9,54 +8,80 @@ from torch.utils.data import TensorDataset, random_split
 class PathIntegrationDataModule(L.LightningDataModule):
     def __init__(
         self,
+        trajectory_type: str, # "ornstein_uhlenbeck"
+        velocity_representation: str,  # "cartesian" | "polar" | "sincos_polar"
+        dt: float,
+        num_time_steps: int,
+        arena_size: float,
+        # unicycle OU parameters
+        linear_speed_mean: float,      # m/s
+        linear_speed_std: float,       # m/s
+        linear_speed_tau: float,       # s
+        angular_speed_mean: float,      # rad/s, default 0.0
+        angular_speed_std: float,      # rad/s
+        angular_speed_tau: float,      # s
+        # Place cell parameters
+        num_place_cells: int,
+        place_cell_rf: float,
+        DoG: bool,
+        surround_scale: float,
+        place_cell_layout: str, # "random" | "uniform"
+
         num_trajectories: int,
         batch_size: int,
         num_workers: int,
         train_val_split: float,
-        velocity_representation: str,
-        dt: float,  # Use dt directly instead of trajectory_duration
-        num_time_steps: int,
-        arena_size: float,
-        speed_scale: float,
-        sigma_speed: float,
-        tau_vel: float,
-        sigma_rotation: float,
-        border_region: float,
-        # Place cell parameters
-        num_place_cells: int,
-        place_cell_rf: float,
-        surround_scale: float,
-        DoG: bool,
-        # Trajectory generation
-        trajectory_type: str = "ornstein_uhlenbeck",
-        place_cell_layout: str = "random",
     ) -> None:
+        """
+        Initialize the PathIntegrationDataModule.
+
+        :param trajectory_type: Trajectory generation type (only "ornstein_uhlenbeck" supported for now)
+        :param velocity_representation: Input encoding - "cartesian", "polar", or "sincos_polar"
+        :param dt: Simulation time step size (s)
+        :param num_time_steps: Number of time steps to simulate
+        :param arena_size: Size of the arena (m)
+        :param linear_speed_mean: Mean linear speed (m/s)
+        :param linear_speed_std: Standard deviation of linear speed (m/s) for OU process
+        :param linear_speed_tau: Autocorrelation time for linear speed (s)
+        :param angular_speed_mean: Mean angular velocity (rad/s), typically 0.0
+        :param angular_speed_std: Standard deviation of angular velocity (rad/s) for OU process
+        :param angular_speed_tau: Autocorrelation time for angular velocity (s)
+        :param num_place_cells: Number of place cells
+        :param place_cell_rf: Place cell receptive field radius (m)
+        :param DoG: Whether to use DoG place cell activation
+        :param surround_scale: Surround scale for DoG place cell activation
+        :param place_cell_layout: Place cell layout ("random" | "uniform")
+        :param num_trajectories: Number of trajectories to simulate
+        :param batch_size: Batch size
+        :param num_workers: Number of workers for data loading
+        :param train_val_split: Train/val split ratio
+        """
         super().__init__()
+        
+        self.trajectory_type = trajectory_type
+        self.velocity_representation = velocity_representation
+        self.dt = dt
+        self.num_time_steps = num_time_steps
+        self.arena_size = arena_size
+        
+        self.linear_speed_mean = linear_speed_mean
+        self.linear_speed_std = linear_speed_std
+        self.linear_speed_tau = linear_speed_tau
+        self.angular_speed_mean = angular_speed_mean
+        self.angular_speed_std = angular_speed_std
+        self.angular_speed_tau = angular_speed_tau        
+        
+        # Place cell parameters
+        self.num_place_cells = num_place_cells
+        self.place_cell_rf = place_cell_rf
+        self.DoG = DoG
+        self.surround_scale = surround_scale
+        self.place_cell_layout = place_cell_layout
+
         self.num_trajectories = num_trajectories
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.train_val_split = train_val_split
-        self.velocity_representation = velocity_representation
-        self.dt = dt  # Use dt directly
-        self.num_time_steps = num_time_steps
-
-        self.arena_size = arena_size
-        self.speed_scale = speed_scale  # typical speed (m/sec)
-        self.sigma_speed = sigma_speed
-        self.tau_vel = tau_vel
-        self.sigma_rotation = sigma_rotation  # stdev rotation velocity (rads/sec)
-        self.border_region = border_region  # meters
-
-        # Trajectory generation type
-        self.trajectory_type = trajectory_type
-
-        # Place cell parameters
-        self.num_place_cells = num_place_cells
-        self.place_cell_rf = place_cell_rf
-        self.surround_scale = surround_scale
-        self.DoG = DoG
-
-        self.place_cell_layout = place_cell_layout
 
         # Initialize place cell centers based on layout
         if place_cell_layout == "random":
@@ -103,7 +128,7 @@ class PathIntegrationDataModule(L.LightningDataModule):
 
         return centers_x, centers_y
 
-    def get_place_cell_activations(self, pos: torch.Tensor) -> torch.Tensor:
+    def _get_place_cell_activations(self, pos: torch.Tensor) -> torch.Tensor:
         """
         Compute place cell activations for given positions.
 
@@ -136,198 +161,98 @@ class PathIntegrationDataModule(L.LightningDataModule):
 
         return outputs
 
-    def _simulate_ornstein_uhlenbeck_trajectories(
-        self,
-        device: str = "cpu",
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _simulate_unicycle_ou(self, device: str = "cpu"):
         """
-        Simulates trajectories using Ornstein-Uhlenbeck process.
+        Generate (B,T) trajectories using a unicycle with OU on linear speed v and angular velocity ω.
+        Outputs encoded per self.velocity_representation.
+        Returns: inputs[B,T,C], positions[B,T,2], place_cell_activations[B,T,Np]
         """
-        # Use numpy from the start
-        pos = (
-            np.random.uniform(0, 1, (self.num_trajectories, 2)) - 0.5
-        ) * self.arena_size
+        B, T, dt = self.num_trajectories, self.num_time_steps, self.dt
+        R = self.arena_size / 2.0
 
-        # Sample initial heading and speed
-        hd0 = np.random.uniform(0, 2 * np.pi, self.num_trajectories)
-        spd0 = np.clip(
-            np.random.normal(self.speed_scale, self.sigma_speed, self.num_trajectories),
-            a_min=0.0,
-            a_max=None,
-        )
-        vel = np.stack([np.cos(hd0), np.sin(hd0)], axis=-1) * spd0[:, None]
+        # --- Parameters ---
+        mu_v   = float(self.linear_speed_mean)
+        s_v    = float(self.linear_speed_std)
+        tau_v  = float(self.linear_speed_tau)
 
-        pos_list, vel_list = [pos.copy()], [vel.copy()]
+        mu_om  = float(self.angular_speed_mean)
+        s_om   = float(self.angular_speed_std)
+        tau_om = float(self.angular_speed_tau)
 
-        sqrt_2dt_over_tau = math.sqrt(2 * self.dt / self.tau_vel)
+        # OU diffusion scales from target std + tau: Var = (sigma^2 * tau)/2
+        sig_v  = np.float32(np.sqrt(2.0 * (s_v**2)  / max(tau_v,  1e-6)))
+        sig_om = np.float32(np.sqrt(2.0 * (s_om**2) / max(tau_om, 1e-6)))
+        sqrt_dt = np.float32(np.sqrt(dt))
 
-        for _ in range(self.num_time_steps - 1):
-            # OU velocity update (momentum) - all in numpy
-            noise = np.random.randn(*vel.shape)
-            vel = (
-                vel
-                + (self.dt / self.tau_vel) * (-vel)
-                + self.sigma_speed * sqrt_2dt_over_tau * noise
-            )
+        # --- Init state ---
+        pos = np.random.uniform(-R, R, size=(B, 2)).astype(np.float32)
+        th  = np.random.uniform(-np.pi, np.pi, size=(B,)).astype(np.float32)
+        v   = np.clip(np.random.normal(mu_v,  s_v,  size=(B,)), 0.0, None).astype(np.float32)
+        om  = np.random.normal(mu_om, s_om, size=(B,)).astype(np.float32)
 
-            # position update
-            pos = pos + vel * self.dt
+        pos_list = [pos.copy()]
+        th_list  = [th.copy()]
+        v_list   = [v.copy()]
 
-            # Reflective boundaries - numpy version
-            out_left = pos[:, 0] < -self.arena_size / 2
-            out_right = pos[:, 0] > self.arena_size / 2
-            out_bottom = pos[:, 1] < -self.arena_size / 2
-            out_top = pos[:, 1] > self.arena_size / 2
+        for _ in range(T-1):
+            # --- OU updates ---
+            v  += (-(v  - mu_v )/tau_v )*dt + sig_v * sqrt_dt * np.random.randn(B).astype(np.float32)
+            v   = np.maximum(v, 0.0)
+            om += (-(om - mu_om)/tau_om)*dt + sig_om* sqrt_dt * np.random.randn(B).astype(np.float32)
 
-            # Reflect positions and flip velocity components
-            if np.any(out_left):
-                pos[out_left, 0] = -self.arena_size - pos[out_left, 0]
-                vel[out_left, 0] *= -1
-            if np.any(out_right):
-                pos[out_right, 0] = self.arena_size - pos[out_right, 0]
-                vel[out_right, 0] *= -1
-            if np.any(out_bottom):
-                pos[out_bottom, 1] = -self.arena_size - pos[out_bottom, 1]
-                vel[out_bottom, 1] *= -1
-            if np.any(out_top):
-                pos[out_top, 1] = self.arena_size - pos[out_top, 1]
-                vel[out_top, 1] *= -1
+            # --- Kinematics ---
+            th = (th + om*dt + np.pi) % (2*np.pi) - np.pi
+            pos = pos + np.stack([v*np.cos(th)*dt, v*np.sin(th)*dt], axis=-1)
+
+            # --- Robust square reflection (position + heading) ---
+            # X axis (up to two reflections to handle large steps)
+            for _ in range(2):
+                over  = pos[:, 0] >  R
+                under = pos[:, 0] < -R
+                if np.any(over):
+                    pos[over, 0] =  2*R - pos[over, 0]
+                    th[over]     =  np.pi - th[over]
+                if np.any(under):
+                    pos[under, 0] = -2*R - pos[under, 0]
+                    th[under]     =  np.pi - th[under]
+            # Y axis (up to two reflections)
+            for _ in range(2):
+                over  = pos[:, 1] >  R
+                under = pos[:, 1] < -R
+                if np.any(over):
+                    pos[over, 1] =  2*R - pos[over, 1]
+                    th[over]     = -th[over]
+                if np.any(under):
+                    pos[under, 1] = -2*R - pos[under, 1]
+                    th[under]     = -th[under]
 
             pos_list.append(pos.copy())
-            vel_list.append(vel.copy())
+            th_list.append(th.copy())
+            v_list.append(v.copy())
 
-        # Convert to numpy arrays
-        vel_all = np.stack(vel_list, axis=1)  # (batch, T, 2)
-        pos_all = np.stack(pos_list, axis=1)  # (batch, T, 2)
+        pos_all = np.stack(pos_list, axis=1).astype(np.float32)  # (B,T,2)
+        th_all  = np.stack(th_list,  axis=1).astype(np.float32)  # (B,T)
+        v_all   = np.stack(v_list,   axis=1).astype(np.float32)  # (B,T)
 
-        # Choose velocity representation
-        if self.velocity_representation == "cartesian":
-            inputs = vel_all
-        elif self.velocity_representation == "polar":
-            speeds = np.linalg.norm(vel_all, axis=-1)
-            headings = np.arctan2(vel_all[..., 1], vel_all[..., 0]) % (2 * np.pi)
-            inputs = np.stack([headings, speeds], axis=-1)  # (batch, T, 2)
+        # --- Input encodings ---
+        rep = self.velocity_representation
+        if rep == "cartesian":
+            vx = v_all * np.cos(th_all)
+            vy = v_all * np.sin(th_all)
+            inputs = np.stack([vx, vy], axis=-1).astype(np.float32)           # (B,T,2)
+        elif rep == "polar":
+            inputs = np.stack([th_all, v_all], axis=-1).astype(np.float32)     # (B,T,2)
+        elif rep == "sincos_polar":
+            inputs = np.stack([np.cos(th_all), np.sin(th_all), v_all], axis=-1).astype(np.float32)  # (B,T,3)
         else:
-            raise ValueError(
-                f"Invalid velocity representation: {self.velocity_representation}"
-            )
+            raise ValueError("velocity_representation must be one of "
+                             "['cartesian','polar','sincos_polar']")
 
-        # Only convert to torch temporarily for place cell computation
+        # --- Place cells unchanged ---
         pos_tensor = torch.tensor(pos_all, dtype=torch.float32, device=device)
-        place_cell_activations = self.get_place_cell_activations(pos_tensor)
-        place_cell_activations_np = place_cell_activations.cpu().numpy()
+        pc = self._get_place_cell_activations(pos_tensor).cpu().numpy()
 
-        return inputs, pos_all, place_cell_activations_np
-
-    def _simulate_random_walk_trajectories(self, device: str = "cpu"):
-        """
-        Simulates trajectories using random walk with wall avoidance (from original grid cell paper).
-
-        Returns numpy arrays instead of tensors for efficiency.
-        """
-        # Use configurable time parameters
-        dt = self.dt
-
-        # Initialize variables
-        batch_size = self.num_trajectories
-        position = np.zeros([batch_size, self.num_time_steps + 2, 2])
-        head_dir = np.zeros([batch_size, self.num_time_steps + 2])
-        position[:, 0, 0] = np.random.uniform(
-            -self.arena_size / 2, self.arena_size / 2, batch_size
-        )
-        position[:, 0, 1] = np.random.uniform(
-            -self.arena_size / 2, self.arena_size / 2, batch_size
-        )
-        head_dir[:, 0] = np.random.uniform(0, 2 * np.pi, batch_size)
-        velocity = np.zeros([batch_size, self.num_time_steps + 2])
-
-        # Generate sequence of random boosts and turns
-        random_turn = np.random.normal(
-            0, self.sigma_rotation, [batch_size, self.num_time_steps + 1]
-        )
-        random_vel = np.random.rayleigh(
-            self.speed_scale, [batch_size, self.num_time_steps + 1]
-        )
-        v = np.abs(np.random.normal(0, self.speed_scale * np.pi / 2, batch_size))
-
-        def avoid_wall(position, hd, box_width, box_height):
-            """Wall avoidance from old code"""
-            x = position[:, 0]
-            y = position[:, 1]
-            dists = [
-                box_width / 2 - x,
-                box_height / 2 - y,
-                box_width / 2 + x,
-                box_height / 2 + y,
-            ]
-            d_wall = np.min(dists, axis=0)
-            angles = np.arange(4) * np.pi / 2
-            theta = angles[np.argmin(dists, axis=0)]
-            hd = np.mod(hd, 2 * np.pi)
-            a_wall = hd - theta
-            a_wall = np.mod(a_wall + np.pi, 2 * np.pi) - np.pi
-
-            is_near_wall = (d_wall < self.border_region) * (np.abs(a_wall) < np.pi / 2)
-            turn_angle = np.zeros_like(hd)
-            turn_angle[is_near_wall] = np.sign(a_wall[is_near_wall]) * (
-                np.pi / 2 - np.abs(a_wall[is_near_wall])
-            )
-
-            return is_near_wall, turn_angle
-
-        for t in range(self.num_time_steps + 1):
-            # Update velocity
-            v = random_vel[:, t]
-            turn_angle = np.zeros(batch_size)
-
-            # Wall avoidance (not periodic boundaries)
-            is_near_wall, turn_angle = avoid_wall(
-                position[:, t], head_dir[:, t], self.arena_size, self.arena_size
-            )
-            v[is_near_wall] *= 0.25
-
-            # Update turn angle
-            turn_angle += dt * random_turn[:, t]
-
-            # Take a step
-            velocity[:, t] = v * dt
-            update = velocity[:, t, None] * np.stack(
-                [np.cos(head_dir[:, t]), np.sin(head_dir[:, t])], axis=-1
-            )
-            position[:, t + 1] = position[:, t] + update
-
-            # Rotate head direction
-            head_dir[:, t + 1] = head_dir[:, t] + turn_angle
-
-        head_dir = np.mod(head_dir + np.pi, 2 * np.pi) - np.pi  # Periodic variable
-
-        # Extract trajectories (like old code)
-        # init_pos = position[:, 1, :]  # Use position at t=1 as initial
-        traj_pos = position[:, 2:, :]  # Positions from t=2 onwards
-        ego_v = velocity[:, 1:-1]  # Ego velocities
-        target_hd = head_dir[:, 1:-1]  # Head directions
-
-        # Choose velocity representation (stay in numpy):
-        if self.velocity_representation == "cartesian":
-            # Convert to cartesian velocities (like old code does)
-            v_inputs = np.stack(
-                [ego_v * np.cos(target_hd), ego_v * np.sin(target_hd)], axis=-1
-            )
-        elif self.velocity_representation == "polar":
-            # Keep as polar [heading, speed]
-            v_inputs = np.stack([target_hd, ego_v], axis=-1)
-        else:
-            raise ValueError(
-                f"Invalid velocity representation: {self.velocity_representation}"
-            )
-
-        # Compute place cell activations (need tensors for this, then convert back)
-        pos_tensor = torch.tensor(traj_pos, dtype=torch.float32, device=device)
-        place_cell_activations = self.get_place_cell_activations(pos_tensor)
-        place_cell_activations_np = place_cell_activations.cpu().numpy()
-
-        # Return all numpy arrays
-        return v_inputs, traj_pos, place_cell_activations_np
+        return inputs, pos_all, pc
 
     def simulate_trajectories(
         self, device: str = "cpu"
@@ -336,18 +261,20 @@ class PathIntegrationDataModule(L.LightningDataModule):
         Simulates trajectories based on the specified trajectory type.
 
         Returns:
-            inputs: numpy array of shape (batch, T, 2)
+            inputs: numpy array of shape (batch, T, C) where C depends on velocity_representation
+                   - cartesian: C=2 (vx, vy)
+                   - polar: C=2 (heading, speed)
+                   - sincos_polar: C=3 (cos(heading), sin(heading), speed)
             positions: numpy array of shape (batch, T, 2)
             place_cell_activations: numpy array of shape (batch, T, num_place_cells)
         """
         if self.trajectory_type == "ornstein_uhlenbeck":
-            return self._simulate_ornstein_uhlenbeck_trajectories(device)
-        elif self.trajectory_type == "random_walk":
-            return self._simulate_random_walk_trajectories(device)
+            # Now uses unicycle-OU core
+            return self._simulate_unicycle_ou(device)
         else:
             raise NotImplementedError(
                 f"Trajectory type '{self.trajectory_type}' is not implemented. "
-                f"Currently supported: ['ornstein_uhlenbeck', 'random_walk']"
+                f"Currently supported: ['ornstein_uhlenbeck']"
             )
 
     def setup(self, stage=None) -> None:
