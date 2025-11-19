@@ -50,6 +50,7 @@ class SpatialAnalyzer:
         self.bin_centers_y = None
         self.bin_size = None
         self.arena_size = None
+        self.time_lag = None
 
     def compute_rate_maps(
         self,
@@ -58,33 +59,46 @@ class SpatialAnalyzer:
         bin_size: float = 0.1,
         num_trajectories: int = 1000,
         min_occupancy: int = 5,
+        time_lag: int = 0,
     ) -> "SpatialAnalyzer":
         """
-        Compute spatial rate maps for all hidden units.
+        Compute spatial rate maps for all hidden units with optional time lag.
 
         Parameters:
         -----------
         eval_loader : DataLoader
             DataLoader providing trajectories
         arena_size : float
-            Size of the arena
+            Size of the arena (meters)
         bin_size : float
-            Size of spatial bins
+            Size of spatial bins (meters)
         num_trajectories : int
             Number of trajectories to use
         min_occupancy : int
             Minimum visits to a bin for reliable estimate
+        time_lag : int
+            Time lag between neural activity and position (in time steps):
+            - time_lag = 0: Concurrent encoding (activity at t vs position at t)
+            - time_lag > 0: Prospective encoding (activity at t vs position at t+lag)
+            - time_lag < 0: Retrospective encoding (activity at t vs position at t+lag, past)
+            Example: time_lag=5 means "does neuron at time t encode position 5 steps ahead?"
 
         Returns:
         --------
         self : SpatialAnalyzer
             Returns self for method chaining
         """
-        print(f"Computing spatial rate maps using {num_trajectories} trajectories...")
+        lag_description = (
+            "concurrent" if time_lag == 0
+            else f"prospective (lag={time_lag})" if time_lag > 0
+            else f"retrospective (lag={time_lag})"
+        )
+        print(f"Computing {lag_description} spatial rate maps using {num_trajectories} trajectories...")
 
         # Store parameters
         self.arena_size = arena_size
         self.bin_size = bin_size
+        self.time_lag = time_lag
 
         # Define spatial bins
         x_min, x_max = -arena_size / 2, arena_size / 2
@@ -145,14 +159,21 @@ class SpatialAnalyzer:
 
                     # For each time step
                     for t in range(traj_hidden.shape[0]):
-                        pos_x, pos_y = traj_positions[t]
-                        activations = traj_hidden[t]  # (hidden,)
+                        # Apply time lag: compare activity at t with position at t+lag
+                        t_pos = t + time_lag
+                        
+                        # Check temporal bounds
+                        if not (0 <= t_pos < traj_positions.shape[0]):
+                            continue  # Skip if lagged position is out of bounds
+                        
+                        pos_x, pos_y = traj_positions[t_pos]  # Position at t+lag
+                        activations = traj_hidden[t]  # Activity at t
 
                         # Find spatial bin
                         x_bin = np.digitize(pos_x, x_bins) - 1
                         y_bin = np.digitize(pos_y, y_bins) - 1
 
-                        # Check bounds
+                        # Check spatial bounds
                         if 0 <= x_bin < n_bins_x and 0 <= y_bin < n_bins_y:
                             # Add activations to this spatial bin
                             activation_sums[:, x_bin, y_bin] += activations
@@ -292,7 +313,15 @@ class SpatialAnalyzer:
                 ax = axes[row, col]
             ax.set_visible(False)
 
-        plt.suptitle(f"Spatial Rate Maps ({selection_method}, n={n_plot})", fontsize=16)
+        # Create title with time lag information
+        if self.time_lag is not None and self.time_lag != 0:
+            lag_info = f"lag={self.time_lag:+d}" if self.time_lag != 0 else ""
+            lag_type = "prospective" if self.time_lag > 0 else "retrospective"
+            title = f"Spatial Rate Maps - {lag_type} ({lag_info}, {selection_method}, n={n_plot})"
+        else:
+            title = f"Spatial Rate Maps ({selection_method}, n={n_plot})"
+        
+        plt.suptitle(title, fontsize=16)
         plt.tight_layout()
         plt.show()
 
