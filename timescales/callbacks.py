@@ -878,3 +878,277 @@ class TimescaleVisualizationCallback(L.Callback):
             ax.set_xlabel("Timescale")
             ax.set_ylabel("Density")
             ax.legend()
+
+
+class GradientStatisticsCallback(L.Callback):
+    """
+    Callback to track gradient statistics during training.
+    
+    Tracks gradient statistics across all parameters and optionally per weight matrix.
+    
+    Gradient variance: Var([∂L/∂θ₁, ∂L/∂θ₂, ..., ∂L/∂θₙ]) - variance of gradient 
+    elements treated as a distribution. Low variance + low norm indicates vanishing 
+    gradients; high variance can indicate instability.
+    
+    For RNNs, tracks separate statistics for:
+    - W_in (input weights)
+    - W_rec (recurrent weights)  
+    - W_out (output/readout weights)
+    - Other parameters (biases, init weights)
+    """
+
+    def __init__(
+        self,
+        save_dir: str,
+        log_every_n_steps: int = 100,
+        track_per_weight_matrix: bool = True,
+    ):
+        """
+        Args:
+            save_dir: Directory to save gradient statistics
+            log_every_n_steps: Log gradients every N training steps
+            track_per_weight_matrix: If True, track W_in, W_rec, W_out separately
+        """
+        super().__init__()
+        self.save_dir = save_dir
+        self.log_every_n_steps = log_every_n_steps
+        self.track_per_weight_matrix = track_per_weight_matrix
+
+        # Storage for global gradient statistics
+        # "Global" = variance/norm/etc. computed across ALL gradient elements
+        self.global_stats = {
+            "step": [],
+            "epoch": [],
+            "grad_variance": [],  # Var of all gradient elements
+            "grad_mean": [],       # Mean of all gradient elements
+            "grad_norm": [],       # L2 norm of gradient vector
+            "grad_max": [],        # Max gradient element
+            "grad_min": [],        # Min gradient element
+        }
+
+        # Storage for per-weight-matrix statistics
+        self.weight_matrix_stats = {}
+
+    def _categorize_parameter(self, param_name: str) -> str:
+        """
+        Categorize parameter by type for grouped tracking.
+        
+        Maps parameter names to weight matrix categories:
+        - W_in: Input weights (e.g., "rnn_step.W_in.weight")
+        - W_rec: Recurrent weights (e.g., "rnn_step.W_rec.weight")
+        - W_out: Output/readout weights (e.g., "W_out.weight")
+        - W_h_init: Initial state encoder
+        - biases: All bias terms
+        - other: Everything else
+        """
+        # Remove "model." prefix if present
+        name = param_name.replace("model.", "")
+        
+        if "W_in" in name or "input" in name.lower():
+            if "bias" in name:
+                return "biases"
+            return "W_in"
+        elif "W_rec" in name or "recurrent" in name.lower():
+            if "bias" in name:
+                return "biases"
+            return "W_rec"
+        elif "W_out" in name or "readout" in name.lower():
+            return "W_out"
+        elif "W_h_init" in name or "h_init" in name:
+            return "W_h_init"
+        elif "bias" in name:
+            return "biases"
+        else:
+            return "other"
+
+    def on_after_backward(self, trainer: L.Trainer, pl_module: L.LightningModule):
+        """
+        Called after loss.backward() and before optimizers step.
+        
+        Computes gradient statistics:
+        1. Global: variance, norm, etc. across ALL gradient elements
+        2. Per-matrix: separate stats for W_in, W_rec, W_out, etc.
+        """
+        # Only log every N steps
+        if trainer.global_step % self.log_every_n_steps != 0:
+            return
+
+        # Collect all gradients and group by weight matrix type
+        all_grads = []
+        weight_matrix_grads = {}
+
+        for name, param in pl_module.named_parameters():
+            if param.grad is not None:
+                grad_data = param.grad.detach().cpu().flatten()
+                all_grads.append(grad_data)
+
+                if self.track_per_weight_matrix:
+                    # Categorize this parameter
+                    category = self._categorize_parameter(name)
+                    if category not in weight_matrix_grads:
+                        weight_matrix_grads[category] = []
+                    weight_matrix_grads[category].append(grad_data)
+
+        if len(all_grads) == 0:
+            return
+
+        # Concatenate all gradients into single vector
+        all_grads_tensor = torch.cat(all_grads)
+
+        # Compute global statistics (variance of all gradient elements)
+        grad_variance = float(torch.var(all_grads_tensor))
+        grad_mean = float(torch.mean(all_grads_tensor))
+        grad_norm = float(torch.norm(all_grads_tensor))
+        grad_max = float(torch.max(all_grads_tensor))
+        grad_min = float(torch.min(all_grads_tensor))
+
+        # Store global statistics
+        self.global_stats["step"].append(trainer.global_step)
+        self.global_stats["epoch"].append(trainer.current_epoch)
+        self.global_stats["grad_variance"].append(grad_variance)
+        self.global_stats["grad_mean"].append(grad_mean)
+        self.global_stats["grad_norm"].append(grad_norm)
+        self.global_stats["grad_max"].append(grad_max)
+        self.global_stats["grad_min"].append(grad_min)
+
+        # Log global statistics to wandb
+        pl_module.log("train/grad_variance", grad_variance, on_step=True, on_epoch=False)
+        pl_module.log("train/grad_norm", grad_norm, on_step=True, on_epoch=False)
+        pl_module.log("train/grad_mean", grad_mean, on_step=True, on_epoch=False)
+        pl_module.log("train/grad_max", grad_max, on_step=True, on_epoch=False)
+        pl_module.log("train/grad_min", grad_min, on_step=True, on_epoch=False)
+
+        # Compute and log per-weight-matrix statistics
+        if self.track_per_weight_matrix:
+            for matrix_type, grads in weight_matrix_grads.items():
+                matrix_grad_tensor = torch.cat(grads)
+                matrix_var = float(torch.var(matrix_grad_tensor))
+                matrix_norm = float(torch.norm(matrix_grad_tensor))
+                matrix_mean = float(torch.mean(matrix_grad_tensor))
+
+                # Initialize storage for this matrix type if needed
+                if matrix_type not in self.weight_matrix_stats:
+                    self.weight_matrix_stats[matrix_type] = {
+                        "step": [],
+                        "epoch": [],
+                        "variance": [],
+                        "norm": [],
+                        "mean": [],
+                    }
+
+                # Store statistics
+                self.weight_matrix_stats[matrix_type]["step"].append(trainer.global_step)
+                self.weight_matrix_stats[matrix_type]["epoch"].append(trainer.current_epoch)
+                self.weight_matrix_stats[matrix_type]["variance"].append(matrix_var)
+                self.weight_matrix_stats[matrix_type]["norm"].append(matrix_norm)
+                self.weight_matrix_stats[matrix_type]["mean"].append(matrix_mean)
+
+                # Log to wandb
+                pl_module.log(
+                    f"train/grad_variance/{matrix_type}",
+                    matrix_var,
+                    on_step=True,
+                    on_epoch=False,
+                )
+                pl_module.log(
+                    f"train/grad_norm/{matrix_type}",
+                    matrix_norm,
+                    on_step=True,
+                    on_epoch=False,
+                )
+                pl_module.log(
+                    f"train/grad_mean/{matrix_type}",
+                    matrix_mean,
+                    on_step=True,
+                    on_epoch=False,
+                )
+
+    def on_train_epoch_end(self, trainer: L.Trainer, pl_module: L.LightningModule):
+        """Save gradient statistics at the end of each epoch."""
+        self._save_statistics()
+
+    @rank_zero_only
+    def _save_statistics(self):
+        """Save gradient statistics to JSON files."""
+        os.makedirs(self.save_dir, exist_ok=True)
+
+        # Save global statistics (variance across all gradient elements)
+        global_stats_path = os.path.join(self.save_dir, "gradient_statistics.json")
+        with open(global_stats_path, "w") as f:
+            json.dump(self.global_stats, f, indent=2)
+
+        # Save per-weight-matrix statistics if tracked
+        if self.track_per_weight_matrix and self.weight_matrix_stats:
+            matrix_stats_path = os.path.join(
+                self.save_dir, "gradient_statistics_weight_matrices.json"
+            )
+            with open(matrix_stats_path, "w") as f:
+                json.dump(self.weight_matrix_stats, f, indent=2)
+
+    def on_train_end(self, trainer: L.Trainer, pl_module: L.LightningModule):
+        """Create summary plots at the end of training."""
+        self._save_statistics()
+        self._create_summary_plots()
+
+    @rank_zero_only
+    def _create_summary_plots(self):
+        """Create summary plots of gradient statistics."""
+        if len(self.global_stats["step"]) == 0:
+            return
+
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        fig.suptitle("Gradient Statistics Throughout Training", fontsize=16)
+
+        steps = self.global_stats["step"]
+
+        # Plot 1: Gradient Variance
+        axes[0, 0].plot(steps, self.global_stats["grad_variance"], "b-", linewidth=1)
+        axes[0, 0].set_xlabel("Training Step")
+        axes[0, 0].set_ylabel("Gradient Variance")
+        axes[0, 0].set_title("Gradient Variance")
+        axes[0, 0].grid(True, alpha=0.3)
+        axes[0, 0].set_yscale("log")
+
+        # Plot 2: Gradient Norm
+        axes[0, 1].plot(steps, self.global_stats["grad_norm"], "g-", linewidth=1)
+        axes[0, 1].set_xlabel("Training Step")
+        axes[0, 1].set_ylabel("Gradient Norm")
+        axes[0, 1].set_title("Gradient Norm (L2)")
+        axes[0, 1].grid(True, alpha=0.3)
+        axes[0, 1].set_yscale("log")
+
+        # Plot 3: Gradient Mean (absolute value)
+        axes[1, 0].plot(
+            steps,
+            np.abs(self.global_stats["grad_mean"]),
+            "r-",
+            linewidth=1,
+            label="abs(mean)",
+        )
+        axes[1, 0].set_xlabel("Training Step")
+        axes[1, 0].set_ylabel("|Gradient Mean|")
+        axes[1, 0].set_title("Absolute Gradient Mean")
+        axes[1, 0].grid(True, alpha=0.3)
+        axes[1, 0].set_yscale("log")
+
+        # Plot 4: Gradient Range (max/min)
+        axes[1, 1].plot(steps, self.global_stats["grad_max"], "orange", linewidth=1, label="Max")
+        axes[1, 1].plot(steps, np.abs(self.global_stats["grad_min"]), "purple", linewidth=1, label="abs(Min)")
+        axes[1, 1].set_xlabel("Training Step")
+        axes[1, 1].set_ylabel("Gradient Value")
+        axes[1, 1].set_title("Gradient Range")
+        axes[1, 1].legend()
+        axes[1, 1].grid(True, alpha=0.3)
+        axes[1, 1].set_yscale("log")
+
+        plt.tight_layout()
+        
+        plot_path = os.path.join(self.save_dir, "gradient_statistics.png")
+        plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+        plt.close()
+
+        print(f"Gradient statistics plot saved to: {plot_path}")
+
+        # Log to wandb if available
+        if wandb.run is not None:
+            wandb.log({"gradient_statistics_plot": wandb.Image(plot_path)})

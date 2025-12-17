@@ -2,7 +2,12 @@
 
 This module contains the tools for analyzing trained RNN models.
 
-Key terms:
+## 📚 Documentation
+
+- **[GRADIENT_TRACKING.md](GRADIENT_TRACKING.md)** - Guide for tracking gradient statistics during training
+- **[TIME_LAG_ANALYSIS.md](TIME_LAG_ANALYSIS.md)** - Guide for time-lagged spatial encoding analysis
+
+## Key Terms
 
 - Single run: A single training run of a model (1 configuration, 1 random seed).
 - Experiment: The same model configuration, but with multiple random seeds.
@@ -42,6 +47,12 @@ Expected sweep structure:
 - Analysis `(analyses.py)`: A class that applies a measurement to a given model and dataset.
 
 - SweepEvaluator `(sweep_evaluator.py)`: A class that applies an analysis to a given sweep.
+
+## Spatial Analysis
+
+- **SpatialAnalyzer** `(spatial.py)`: Compute and visualize spatial rate maps for RNN hidden units
+  - Supports time-lagged analysis (prospective/retrospective encoding)
+  - See [TIME_LAG_ANALYSIS.md](TIME_LAG_ANALYSIS.md) for detailed usage
 
 ## Plotting
 

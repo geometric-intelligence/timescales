@@ -1,0 +1,56 @@
+# 10x10 Grid Sweep: Linear Speed × Alpha (Timescale)
+#
+# Automatically generates 100 experiments from parameter grids
+#
+# Total configurations: 10 speeds × 10 alphas = 100 experiments
+# Seeds per config: 1
+# Total runs: 100
+#
+# Linear speeds: 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5 m/s
+# Alphas: 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0
+# Timescale values: dt/alpha where dt=0.1s
+#
+# Research questions:
+#   - Does optimal timescale depend on movement speed?
+#   - Speed-timescale matching/mismatch effects
+#   - Learning dynamics across parameter space
+
+base_config: "base_configs/mts.yaml"
+
+# Number of seeds per configuration
+n_seeds: 1
+
+# Grid specification
+# Each parameter gets a list of values to sweep over
+# The code will automatically generate all combinations
+grid:
+  linear_speed_mean:
+    - 0.05
+    - 0.10
+    - 0.15
+    - 0.20
+    - 0.25
+    - 0.30
+    - 0.35
+    - 0.40
+    - 0.45
+    - 0.50
+  
+  # Timescale values corresponding to alphas 0.1, 0.2, ..., 1.0
+  # Format: timescales_config__values creates timescales_config: {values: [X]}
+  timescales_config__values:
+    - [0.949]  # alpha = 0.1
+    - [0.448]  # alpha = 0.2
+    - [0.280]  # alpha = 0.3
+    - [0.196]  # alpha = 0.4
+    - [0.144]  # alpha = 0.5
+    - [0.109]  # alpha = 0.6
+    - [0.083]  # alpha = 0.7
+    - [0.062]  # alpha = 0.8
+    - [0.043]  # alpha = 0.9
+    - [0.001]  # alpha = 1.0
+
+# Alternative naming scheme (optional):
+# You can add custom naming by specifying experiment_name_format
+# experiment_name_format: "speed_{linear_speed_mean:.2f}_alpha_{alpha:.1f}"
+

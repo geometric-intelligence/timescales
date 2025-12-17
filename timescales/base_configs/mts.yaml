@@ -8,7 +8,7 @@ seed: 0 # Global seed
 
 # === RNN configuration == 
 input_size: 2 # 3 for sincos HD encoding
-hidden_size: 4096
+hidden_size: 512 #4096
 activation: "ReLU" #"Tanh"
 
 # Timescales configuration
@@ -23,7 +23,7 @@ trajectory_type: 'ornstein_uhlenbeck'
 velocity_representation: 'polar'
 dt: 0.1 # s, (reasonable neural dynamics timescale)
 num_time_steps: 20
-arena_size: 2.2
+arena_size: 1.1
 
 linear_speed_mean: 0.2
 linear_speed_std: 0.5
@@ -33,7 +33,7 @@ angular_speed_std: 1.2
 angular_speed_tau: 0.4
 
 # Place cell configuration
-num_place_cells: 512
+num_place_cells: 256
 place_cell_rf: 0.2
 DoG: true
 surround_scale: 2
@@ -54,3 +54,10 @@ max_epochs: 200
 decode_k: 3
 log_every_n_epochs: 1
 viz_log_every_n_epochs: 10
+
+# Checkpoint saving
+save_checkpoint_every_n_epochs: 10  # Save checkpoint every N epochs (null or 0 to disable)
+
+# Gradient tracking
+grad_log_every_n_steps: 100  # Log gradient stats every N training steps
+grad_track_per_weight_matrix: true  # Track W_in, W_rec, W_out separately

@@ -11,6 +11,7 @@ import yaml
 import argparse
 import datetime
 import copy
+import itertools
 from typing import List, Dict, Any, Tuple
 from single_run import single_seed
 import numpy as np
@@ -48,11 +49,102 @@ def load_sweep_config(sweep_file: str) -> Dict:
     return sweep_config
 
 
-def generate_experiment_configs(sweep_config: Dict) -> List[Tuple[str, Dict]]:
-    """Generate all individual experiment configurations from sweep."""
+def generate_grid_experiments(sweep_config: Dict) -> List[Tuple[str, Dict]]:
+    """Generate experiment configurations from grid specification.
+    
+    Expects sweep_config to have a 'grid' key with parameter specifications:
+    
+    grid:
+      linear_speed_mean: [0.05, 0.1, 0.15, ...]
+      timescale_values: [0.949, 0.448, 0.280, ...]  # For discrete timescales
+    
+    Or for complex nested parameters:
+    
+    grid:
+      linear_speed_mean: [0.05, 0.1, 0.15, ...]
+      timescales_config__values: [[0.949], [0.448], [0.280], ...]  # Use __ for nested keys
+    """
     base_config = sweep_config["_base_config"]
-    experiments = sweep_config["experiments"]
+    grid_spec = sweep_config["grid"]
+    
+    # Extract parameter names and values
+    param_names = list(grid_spec.keys())
+    param_values = [grid_spec[name] for name in param_names]
+    
+    # Generate all combinations (Cartesian product)
+    combinations = list(itertools.product(*param_values))
+    
+    print(f"Generating grid sweep: {len(combinations)} experiments")
+    print(f"Grid dimensions: {' × '.join([f'{len(v)}' for v in param_values])} = {len(combinations)}")
+    
+    experiment_configs = []
+    for combo in combinations:
+        # Create overrides dict for this combination
+        overrides = {}
+        name_parts = {}  # Use dict to track specific naming components
+        
+        for param_name, value in zip(param_names, combo):
+            # Handle nested keys (e.g., "timescales_config__values")
+            if "__" in param_name:
+                keys = param_name.split("__")
+                current = overrides
+                for key in keys[:-1]:
+                    if key not in current:
+                        current[key] = {}
+                    current = current[key]
+                current[keys[-1]] = value
+                
+                # Special handling for timescales_config__values to compute alpha
+                if param_name == "timescales_config__values" and isinstance(value, list) and len(value) == 1:
+                    # Compute alpha from timescale: alpha = 1 - exp(-dt / timescale)
+                    dt = base_config.get("dt", 0.1)  # Default dt = 0.1s
+                    timescale = value[0]
+                    alpha = 1 - np.exp(-dt / timescale) if timescale > 0.001 else 1.0
+                    name_parts["alpha"] = f"{alpha:.1f}"
+                else:
+                    # Generic nested parameter naming
+                    name_parts[keys[-1]] = str(value)
+            else:
+                overrides[param_name] = value
+                
+                # Format value for name based on parameter type
+                if param_name == "linear_speed_mean":
+                    name_parts["speed"] = f"{value:.2f}"
+                elif isinstance(value, float):
+                    name_parts[param_name] = f"{value:.3f}"
+                else:
+                    name_parts[param_name] = str(value)
+        
+        # Generate experiment name with cleaner format
+        # Prioritize: speed_X_alpha_Y format if both exist
+        if "speed" in name_parts and "alpha" in name_parts:
+            exp_name = f"speed_{name_parts['speed']}_alpha_{name_parts['alpha']}"
+        else:
+            # Fallback to generic naming
+            exp_name = "_".join(f"{k}_{v}" for k, v in name_parts.items())
+        
+        # Merge with base config
+        merged_config = deep_merge_dict(base_config, overrides)
+        experiment_configs.append((exp_name, merged_config))
+    
+    return experiment_configs
 
+
+def generate_experiment_configs(sweep_config: Dict) -> List[Tuple[str, Dict]]:
+    """Generate all individual experiment configurations from sweep.
+    
+    Supports two modes:
+    1. 'experiments' list: Manually specified experiments
+    2. 'grid' dict: Automatic grid generation from parameter lists
+    """
+    base_config = sweep_config["_base_config"]
+    
+    # Check if grid mode
+    if "grid" in sweep_config:
+        return generate_grid_experiments(sweep_config)
+    
+    # Original experiments list mode
+    experiments = sweep_config["experiments"]
     experiment_configs = []
     for exp in experiments:
         exp_name = exp["name"]

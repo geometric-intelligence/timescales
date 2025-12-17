@@ -8,10 +8,10 @@ To train a single model, use:
 
 ```bash
 # Train a vanilla RNN
-python single_run.py --config configs/vanilla.yaml
+python single_run.py --config vanilla.yaml
 
 # Train a multitimescale RNN  
-python single_run.py --config configs/mts.yaml
+python single_run.py --config mts.yaml
 ```
 
 **Output:** `logs/single_runs/{model_type}_{timestamp}/`

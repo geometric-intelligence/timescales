@@ -1,0 +1,139 @@
+# 2D Parameter Sweep: Linear Speed × Timescale (Alpha)
+# Explores how dataset speed and RNN timescale interact
+
+base_config: "base_configs/mts.yaml"
+
+# Number of seeds per configuration
+n_seeds: 1
+
+# Parameter sweep configurations
+# Creating a grid: 4 speeds × 4 timescales = 16 experiments
+experiments:
+  # ===== Linear Speed: 0.1 m/s (slow) =====
+  - name: "speed_0.1_alpha_0.25"
+    overrides:
+      linear_speed_mean: 0.1
+      timescales_config:
+        type: "discrete"
+        values: [0.3476]  # alpha = 0.25 (slow timescale)
+
+  - name: "speed_0.1_alpha_0.5"
+    overrides:
+      linear_speed_mean: 0.1
+      timescales_config:
+        type: "discrete"
+        values: [0.1443]  # alpha = 0.5
+
+  - name: "speed_0.1_alpha_0.75"
+    overrides:
+      linear_speed_mean: 0.1
+      timescales_config:
+        type: "discrete"
+        values: [0.0721]  # alpha = 0.75
+
+  - name: "speed_0.1_alpha_1.0"
+    overrides:
+      linear_speed_mean: 0.1
+      timescales_config:
+        type: "discrete"
+        values: [0.0001]  # alpha = 1.0 (fast timescale)
+
+  # ===== Linear Speed: 0.2 m/s (medium) =====
+  - name: "speed_0.2_alpha_0.25"
+    overrides:
+      linear_speed_mean: 0.2
+      timescales_config:
+        type: "discrete"
+        values: [0.3476]
+
+  - name: "speed_0.2_alpha_0.5"
+    overrides:
+      linear_speed_mean: 0.2
+      timescales_config:
+        type: "discrete"
+        values: [0.1443]
+
+  - name: "speed_0.2_alpha_0.75"
+    overrides:
+      linear_speed_mean: 0.2
+      timescales_config:
+        type: "discrete"
+        values: [0.0721]
+
+  - name: "speed_0.2_alpha_1.0"
+    overrides:
+      linear_speed_mean: 0.2
+      timescales_config:
+        type: "discrete"
+        values: [0.0001]
+
+  # ===== Linear Speed: 0.3 m/s (fast) =====
+  - name: "speed_0.3_alpha_0.25"
+    overrides:
+      linear_speed_mean: 0.3
+      timescales_config:
+        type: "discrete"
+        values: [0.3476]
+
+  - name: "speed_0.3_alpha_0.5"
+    overrides:
+      linear_speed_mean: 0.3
+      timescales_config:
+        type: "discrete"
+        values: [0.1443]
+
+  - name: "speed_0.3_alpha_0.75"
+    overrides:
+      linear_speed_mean: 0.3
+      timescales_config:
+        type: "discrete"
+        values: [0.0721]
+
+  - name: "speed_0.3_alpha_1.0"
+    overrides:
+      linear_speed_mean: 0.3
+      timescales_config:
+        type: "discrete"
+        values: [0.0001]
+
+  # ===== Linear Speed: 0.4 m/s (very fast) =====
+  - name: "speed_0.4_alpha_0.25"
+    overrides:
+      linear_speed_mean: 0.4
+      timescales_config:
+        type: "discrete"
+        values: [0.3476]
+
+  - name: "speed_0.4_alpha_0.5"
+    overrides:
+      linear_speed_mean: 0.4
+      timescales_config:
+        type: "discrete"
+        values: [0.1443]
+
+  - name: "speed_0.4_alpha_0.75"
+    overrides:
+      linear_speed_mean: 0.4
+      timescales_config:
+        type: "discrete"
+        values: [0.0721]
+
+  - name: "speed_0.4_alpha_1.0"
+    overrides:
+      linear_speed_mean: 0.4
+      timescales_config:
+        type: "discrete"
+        values: [0.0001]
+
+# Sweep Summary:
+# Total configurations: 16 (4 speeds × 4 alphas)
+# Total runs: 64 (16 configs × 4 seeds)
+# 
+# Speed range: 0.1 - 0.4 m/s
+# Alpha range: 0.25 - 1.0 (timescale dt/alpha range: 0.4s - 0.1s)
+#
+# Expected insights:
+# - Does optimal timescale depend on movement speed?
+# - Do faster speeds require faster timescales?
+# - Is there a speed-timescale mismatch effect?
+

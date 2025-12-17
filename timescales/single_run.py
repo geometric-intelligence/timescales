@@ -12,6 +12,7 @@ from callbacks import (
     PositionDecodingCallback,
     TrajectoryVisualizationCallback,
     TimescaleVisualizationCallback,
+    GradientStatisticsCallback,
 )
 
 from timescales.analysis.measurements import PositionDecodingMeasurement
@@ -86,7 +87,7 @@ def single_seed(config: dict) -> dict:
     seed_everything(config["seed"], workers=True)
     print(f"Global seed set to: {config['seed']}")
 
-    model_type = config.get("model_type", "vanilla").lower()
+    model_type = config["model_type"]
     seed = config["seed"]
     run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -124,25 +125,33 @@ def single_seed(config: dict) -> dict:
     print(f"Wandb run name: {wandb_name}")
 
     datamodule = PathIntegrationDataModule(
-        num_trajectories=config["num_trajectories"],
-        batch_size=config["batch_size"],
-        num_workers=config["num_workers"],
-        train_val_split=config["train_val_split"],
+        # Trajectory configuration 
+        trajectory_type=config["trajectory_type"],
         velocity_representation=config["velocity_representation"],
         dt=config["dt"],
         num_time_steps=config["num_time_steps"],
         arena_size=config["arena_size"],
-        speed_scale=config["speed_scale"],
-        sigma_speed=config["sigma_speed"],
-        tau_vel=config["tau_vel"],
-        sigma_rotation=config["sigma_rotation"],
-        border_region=config["border_region"],
+        
+        # Unicycle OU parameters
+        linear_speed_mean=config["linear_speed_mean"],
+        linear_speed_std=config["linear_speed_std"],
+        linear_speed_tau=config["linear_speed_tau"],
+        angular_speed_mean=config["angular_speed_mean"],
+        angular_speed_std=config["angular_speed_std"],
+        angular_speed_tau=config["angular_speed_tau"],
+        
+        # Place cell parameters
         num_place_cells=config["num_place_cells"],
         place_cell_rf=config["place_cell_rf"],
-        surround_scale=config["surround_scale"],
         DoG=config["DoG"],
-        trajectory_type=config["trajectory_type"],
+        surround_scale=config["surround_scale"],
         place_cell_layout=config["place_cell_layout"],
+        
+        # DataLoader parameters
+        num_trajectories=config["num_trajectories"],
+        batch_size=config["batch_size"],
+        num_workers=config["num_workers"],
+        train_val_split=config["train_val_split"],
     )
 
     datamodule.prepare_data()
@@ -188,6 +197,7 @@ def single_seed(config: dict) -> dict:
 
     save_untrained_model()
 
+    # Best model checkpoint (monitors validation loss)
     checkpoint_callback = ModelCheckpoint(
         dirpath=checkpoints_dir,
         filename="best-model-{epoch:02d}-{val_loss:.3f}",
@@ -214,12 +224,33 @@ def single_seed(config: dict) -> dict:
         num_trajectories_to_plot=3,
     )
 
+    # Gradient statistics callback
+    gradient_stats_callback = GradientStatisticsCallback(
+        save_dir=run_dir,
+        log_every_n_steps=config.get("grad_log_every_n_steps", 100),
+        track_per_weight_matrix=config.get("grad_track_per_weight_matrix", True),
+    )
+
+    # Build callbacks list
     callbacks = [
         checkpoint_callback,
         loss_logger,
         position_decoding_callback,
         trajectory_viz_callback,
+        gradient_stats_callback,
     ]
+
+    # Periodic checkpoint (every N epochs)
+    checkpoint_every_n = config.get("save_checkpoint_every_n_epochs", None)
+    if checkpoint_every_n is not None and checkpoint_every_n > 0:
+        periodic_checkpoint = ModelCheckpoint(
+            dirpath=checkpoints_dir,
+            filename="checkpoint-epoch={epoch:03d}",
+            every_n_epochs=checkpoint_every_n,
+            save_top_k=-1,  # Save all periodic checkpoints
+        )
+        callbacks.append(periodic_checkpoint)
+        print(f"Periodic checkpoints enabled: saving every {checkpoint_every_n} epochs")
 
     if model_type == "multitimescale":
         timescale_viz_callback = TimescaleVisualizationCallback()
@@ -250,6 +281,7 @@ def single_seed(config: dict) -> dict:
     print("Trainer initialized")
     print("Training...")
 
+    #TODO: Add optimizer options (Adam, SGD, etc.; currently only Adam is supported)
     trainer.fit(lightning_module, train_loader, val_loader)
 
     print("Training complete!")
@@ -292,7 +324,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    config_path = os.path.join(os.path.dirname(__file__), "configs", args.config)
+    config_path = os.path.join(os.path.dirname(__file__), "base_configs", args.config)
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config file not found at {config_path}")
 
