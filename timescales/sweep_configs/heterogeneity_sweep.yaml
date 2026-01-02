@@ -1,0 +1,85 @@
+# Heterogeneity Sweep: Neural vs Behavioral Timescale Diversity
+# 
+# Research Question: How does neural timescale heterogeneity relate to 
+# behavioral timescale heterogeneity?
+#
+# Key insight: Both neural and behavioral timescales are now parameterized
+# with Gaussian distributions, making them directly comparable.
+#
+# Behavioral timescale: τ_behavior = place_cell_rf / linear_speed
+# - Controls how long the agent stays within one place field
+# - The network must integrate over this timescale to track position
+#
+# Neural timescale: τ_neural from Gaussian(mean, std)
+# - Controls how quickly each neuron "forgets" its past activity
+# - α = 1 - exp(-dt/τ) determines the update rate
+#
+# Total experiments: 5 neural_std × 5 behavioral_std = 25 experiments
+
+base_config: "timescales/base_configs/mts.yaml"
+n_seeds: 1
+
+# Fixed parameters for this sweep
+fixed_overrides:
+  # Neural timescale distribution: Gaussian on τ
+  timescales_config:
+    type: "continuous"
+    distribution: "gaussian"
+    mean: 0.5       # Mean neural timescale (seconds)
+    min_timescale: 0.05  # Clamp minimum (avoid instability)
+    max_timescale: 2.0   # Clamp maximum
+    # std will be varied in the grid
+  
+  # Fixed behavioral parameters
+  behavioral_timescale_mean: 1.0  # seconds (τ = rf/speed = 0.2/0.2)
+  # behavioral_timescale_std will be varied in the grid
+  
+  # OU dynamics (shared)
+  linear_speed_tau: 1.0   # OU time constant for speed
+  angular_speed_mean: 0.0
+  angular_speed_std: 1.0
+  angular_speed_tau: 0.4
+  
+  # Training
+  max_epochs: 100
+  hidden_size: 512
+  
+  # Arena/place cell setup
+  arena_size: 1.1
+  place_cell_rf: 0.2  # Defines characteristic length scale
+
+grid:
+  # Neural timescale heterogeneity: std of Gaussian on τ_neural
+  # Small std = homogeneous network, large std = diverse timescales
+  timescales_config__std:
+    - 0
+    - 0.01   # Nearly homogeneous (all neurons similar τ)
+    - 0.05   # Low heterogeneity
+    - 0.1    # Moderate heterogeneity
+    - 0.15
+    - 0.2    # High heterogeneity
+    - 0.25
+    - 0.3
+    - 0.35
+    - 0.4    # Very high heterogeneity
+    - 0.45
+    - 0.5
+  
+  # Behavioral timescale heterogeneity: std of Gaussian on τ_behavior
+  # Now directly comparable to neural τ_std!
+  behavioral_timescale_std:
+    - 0
+    - 0.05   # Low behavioral variability (τ varies ±5%)
+    - 0.1    # 
+    - 0.15
+    - 0.2    # Moderate variability
+    - 0.25
+    - 0.3
+    - 0.35
+    - 0.4    # High variability  
+    - 0.45
+    - 0.8    # Very high variability (τ varies a lot)
+
+# Custom naming for experiments
+naming:
+  format: "neural_std_{timescales_config__std}_behav_std_{behavioral_timescale_std}"

@@ -132,20 +132,24 @@ def single_seed(config: dict) -> dict:
         num_time_steps=config["num_time_steps"],
         arena_size=config["arena_size"],
         
-        # Unicycle OU parameters
-        linear_speed_mean=config["linear_speed_mean"],
-        linear_speed_std=config["linear_speed_std"],
-        linear_speed_tau=config["linear_speed_tau"],
-        angular_speed_mean=config["angular_speed_mean"],
-        angular_speed_std=config["angular_speed_std"],
-        angular_speed_tau=config["angular_speed_tau"],
-        
-        # Place cell parameters
+        # Place cell parameters (needed before speed params for behavioral timescale)
         num_place_cells=config["num_place_cells"],
         place_cell_rf=config["place_cell_rf"],
         DoG=config["DoG"],
         surround_scale=config["surround_scale"],
         place_cell_layout=config["place_cell_layout"],
+        
+        # Speed/behavioral timescale parameters (mutually exclusive)
+        linear_speed_mean=config.get("linear_speed_mean"),
+        linear_speed_std=config.get("linear_speed_std"),
+        behavioral_timescale_mean=config.get("behavioral_timescale_mean"),
+        behavioral_timescale_std=config.get("behavioral_timescale_std"),
+        
+        # OU dynamics
+        linear_speed_tau=config.get("linear_speed_tau", 1.0),
+        angular_speed_mean=config.get("angular_speed_mean", 0.0),
+        angular_speed_std=config.get("angular_speed_std", 1.0),
+        angular_speed_tau=config.get("angular_speed_tau", 0.4),
         
         # DataLoader parameters
         num_trajectories=config["num_trajectories"],

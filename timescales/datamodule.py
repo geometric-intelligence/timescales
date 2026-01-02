@@ -13,44 +13,64 @@ class PathIntegrationDataModule(L.LightningDataModule):
         dt: float,
         num_time_steps: int,
         arena_size: float,
-        # unicycle OU parameters
-        linear_speed_mean: float,      # m/s
-        linear_speed_std: float,       # m/s
-        linear_speed_tau: float,       # s
-        angular_speed_mean: float,      # rad/s, default 0.0
-        angular_speed_std: float,      # rad/s
-        angular_speed_tau: float,      # s
-        # Place cell parameters
+        # Place cell parameters (needed early for behavioral timescale computation)
         num_place_cells: int,
         place_cell_rf: float,
         DoG: bool,
         surround_scale: float,
         place_cell_layout: str, # "random" | "uniform"
-
-        num_trajectories: int,
-        batch_size: int,
-        num_workers: int,
-        train_val_split: float,
+        # Speed parameterization: either direct or via behavioral timescale
+        # Option A: Direct speed parameters
+        linear_speed_mean: float = None,      # m/s
+        linear_speed_std: float = None,       # m/s
+        # Option B: Behavioral timescale parameters (τ_behavior = place_cell_rf / linear_speed)
+        behavioral_timescale_mean: float = None,  # seconds
+        behavioral_timescale_std: float = None,   # seconds
+        # OU dynamics (shared by both parameterizations)
+        linear_speed_tau: float = 1.0,        # OU autocorrelation time (s)
+        # Angular speed parameters
+        angular_speed_mean: float = 0.0,      # rad/s
+        angular_speed_std: float = 1.0,       # rad/s
+        angular_speed_tau: float = 0.4,       # s
+        # DataLoader parameters
+        num_trajectories: int = 10000,
+        batch_size: int = 200,
+        num_workers: int = 4,
+        train_val_split: float = 0.8,
     ) -> None:
         """
         Initialize the PathIntegrationDataModule.
 
-        :param trajectory_type: Trajectory generation type (only "ornstein_uhlenbeck" supported for now)
+        Speed can be parameterized in two ways:
+        
+        Option A - Direct speed parameters:
+            linear_speed_mean, linear_speed_std
+            
+        Option B - Behavioral timescale parameters:
+            behavioral_timescale_mean, behavioral_timescale_std
+            where τ_behavior = place_cell_rf / linear_speed
+            
+        If behavioral timescale params are provided, they take precedence and
+        linear_speed params are computed from them.
+
+        :param trajectory_type: Trajectory generation type (only "ornstein_uhlenbeck" supported)
         :param velocity_representation: Input encoding - "cartesian", "polar", or "sincos_polar"
         :param dt: Simulation time step size (s)
         :param num_time_steps: Number of time steps to simulate
         :param arena_size: Size of the arena (m)
-        :param linear_speed_mean: Mean linear speed (m/s)
-        :param linear_speed_std: Standard deviation of linear speed (m/s) for OU process
-        :param linear_speed_tau: Autocorrelation time for linear speed (s)
-        :param angular_speed_mean: Mean angular velocity (rad/s), typically 0.0
-        :param angular_speed_std: Standard deviation of angular velocity (rad/s) for OU process
-        :param angular_speed_tau: Autocorrelation time for angular velocity (s)
         :param num_place_cells: Number of place cells
         :param place_cell_rf: Place cell receptive field radius (m)
         :param DoG: Whether to use DoG place cell activation
         :param surround_scale: Surround scale for DoG place cell activation
         :param place_cell_layout: Place cell layout ("random" | "uniform")
+        :param linear_speed_mean: Mean linear speed (m/s) - Option A
+        :param linear_speed_std: Std of linear speed (m/s) for OU process - Option A
+        :param behavioral_timescale_mean: Mean behavioral timescale (s) - Option B
+        :param behavioral_timescale_std: Std of behavioral timescale (s) - Option B
+        :param linear_speed_tau: Autocorrelation time for speed OU process (s)
+        :param angular_speed_mean: Mean angular velocity (rad/s), typically 0.0
+        :param angular_speed_std: Std of angular velocity (rad/s) for OU process
+        :param angular_speed_tau: Autocorrelation time for angular velocity (s)
         :param num_trajectories: Number of trajectories to simulate
         :param batch_size: Batch size
         :param num_workers: Number of workers for data loading
@@ -64,19 +84,50 @@ class PathIntegrationDataModule(L.LightningDataModule):
         self.num_time_steps = num_time_steps
         self.arena_size = arena_size
         
-        self.linear_speed_mean = linear_speed_mean
-        self.linear_speed_std = linear_speed_std
-        self.linear_speed_tau = linear_speed_tau
-        self.angular_speed_mean = angular_speed_mean
-        self.angular_speed_std = angular_speed_std
-        self.angular_speed_tau = angular_speed_tau        
-        
-        # Place cell parameters
+        # Place cell parameters (store first, needed for behavioral timescale conversion)
         self.num_place_cells = num_place_cells
         self.place_cell_rf = place_cell_rf
         self.DoG = DoG
         self.surround_scale = surround_scale
         self.place_cell_layout = place_cell_layout
+        
+        # Determine speed parameterization
+        use_behavioral_timescale = (
+            behavioral_timescale_mean is not None and 
+            behavioral_timescale_std is not None
+        )
+        
+        if use_behavioral_timescale:
+            # Option B: Convert behavioral timescale to speed
+            # τ_behavior = rf / v  =>  v = rf / τ_behavior
+            # 
+            # For the std, using Taylor expansion around the mean:
+            # σ_v ≈ (rf / τ_mean²) × σ_τ
+            self.behavioral_timescale_mean = behavioral_timescale_mean
+            self.behavioral_timescale_std = behavioral_timescale_std
+            
+            self.linear_speed_mean = place_cell_rf / behavioral_timescale_mean
+            self.linear_speed_std = (place_cell_rf / behavioral_timescale_mean**2) * behavioral_timescale_std
+            
+            print(f"Behavioral timescale parameterization:")
+            print(f"  τ_behavior: mean={behavioral_timescale_mean:.3f}s, std={behavioral_timescale_std:.3f}s")
+            print(f"  → linear_speed: mean={self.linear_speed_mean:.3f}m/s, std={self.linear_speed_std:.3f}m/s")
+        else:
+            # Option A: Direct speed parameters
+            if linear_speed_mean is None or linear_speed_std is None:
+                raise ValueError(
+                    "Must provide either (linear_speed_mean, linear_speed_std) or "
+                    "(behavioral_timescale_mean, behavioral_timescale_std)"
+                )
+            self.linear_speed_mean = linear_speed_mean
+            self.linear_speed_std = linear_speed_std
+            self.behavioral_timescale_mean = None
+            self.behavioral_timescale_std = None
+        
+        self.linear_speed_tau = linear_speed_tau
+        self.angular_speed_mean = angular_speed_mean
+        self.angular_speed_std = angular_speed_std
+        self.angular_speed_tau = angular_speed_tau        
 
         self.num_trajectories = num_trajectories
         self.batch_size = batch_size

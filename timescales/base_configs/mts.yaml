@@ -25,9 +25,20 @@ dt: 0.1 # s, (reasonable neural dynamics timescale)
 num_time_steps: 20
 arena_size: 1.1
 
-linear_speed_mean: 0.2
-linear_speed_std: 0.5
-linear_speed_tau: 1.0
+# Speed parameterization: Choose ONE of two options:
+# 
+# Option A - Direct speed parameters:
+linear_speed_mean: 0.2    # m/s
+linear_speed_std: 0.5     # m/s (OU noise std)
+#
+# Option B - Behavioral timescale parameters (τ_behavior = place_cell_rf / speed):
+# behavioral_timescale_mean: 1.0   # seconds
+# behavioral_timescale_std: 0.2    # seconds
+# If Option B is used, linear_speed params are computed automatically.
+# This makes behavioral and neural timescale distributions directly comparable.
+
+# OU dynamics (shared by both options)
+linear_speed_tau: 1.0     # OU autocorrelation time (s)
 angular_speed_mean: 0.0
 angular_speed_std: 1.2
 angular_speed_tau: 0.4

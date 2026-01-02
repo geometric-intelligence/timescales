@@ -63,9 +63,17 @@ def generate_grid_experiments(sweep_config: Dict) -> List[Tuple[str, Dict]]:
     grid:
       linear_speed_mean: [0.05, 0.1, 0.15, ...]
       timescales_config__values: [[0.949], [0.448], [0.280], ...]  # Use __ for nested keys
+    
+    Optional fixed_overrides: Applied to all experiments before grid params
+    Optional naming: Custom naming format specification
     """
     base_config = sweep_config["_base_config"]
     grid_spec = sweep_config["grid"]
+    fixed_overrides = sweep_config.get("fixed_overrides", {})
+    naming_config = sweep_config.get("naming", {})
+    
+    # Apply fixed overrides to base config first
+    base_with_fixed = deep_merge_dict(base_config, fixed_overrides)
     
     # Extract parameter names and values
     param_names = list(grid_spec.keys())
@@ -76,6 +84,8 @@ def generate_grid_experiments(sweep_config: Dict) -> List[Tuple[str, Dict]]:
     
     print(f"Generating grid sweep: {len(combinations)} experiments")
     print(f"Grid dimensions: {' × '.join([f'{len(v)}' for v in param_values])} = {len(combinations)}")
+    if fixed_overrides:
+        print(f"Fixed overrides applied: {list(fixed_overrides.keys())}")
     
     experiment_configs = []
     for combo in combinations:
@@ -84,7 +94,7 @@ def generate_grid_experiments(sweep_config: Dict) -> List[Tuple[str, Dict]]:
         name_parts = {}  # Use dict to track specific naming components
         
         for param_name, value in zip(param_names, combo):
-            # Handle nested keys (e.g., "timescales_config__values")
+            # Handle nested keys (e.g., "timescales_config__std")
             if "__" in param_name:
                 keys = param_name.split("__")
                 current = overrides
@@ -102,8 +112,12 @@ def generate_grid_experiments(sweep_config: Dict) -> List[Tuple[str, Dict]]:
                     alpha = 1 - np.exp(-dt / timescale) if timescale > 0.001 else 1.0
                     name_parts["alpha"] = f"{alpha:.1f}"
                 else:
-                    # Generic nested parameter naming
-                    name_parts[keys[-1]] = str(value)
+                    # Store the nested param for naming
+                    # Use full param name for naming clarity
+                    if isinstance(value, float):
+                        name_parts[param_name] = f"{value:.3g}"
+                    else:
+                        name_parts[param_name] = str(value)
             else:
                 overrides[param_name] = value
                 
@@ -111,20 +125,30 @@ def generate_grid_experiments(sweep_config: Dict) -> List[Tuple[str, Dict]]:
                 if param_name == "linear_speed_mean":
                     name_parts["speed"] = f"{value:.2f}"
                 elif isinstance(value, float):
-                    name_parts[param_name] = f"{value:.3f}"
+                    name_parts[param_name] = f"{value:.3g}"
                 else:
                     name_parts[param_name] = str(value)
         
-        # Generate experiment name with cleaner format
-        # Prioritize: speed_X_alpha_Y format if both exist
-        if "speed" in name_parts and "alpha" in name_parts:
+        # Generate experiment name
+        if "format" in naming_config:
+            # Use custom format string
+            # Replace {param_name} with values
+            exp_name = naming_config["format"]
+            for param_name, value in zip(param_names, combo):
+                if isinstance(value, float):
+                    formatted_value = f"{value:.3g}"
+                else:
+                    formatted_value = str(value)
+                exp_name = exp_name.replace("{" + param_name + "}", formatted_value)
+        elif "speed" in name_parts and "alpha" in name_parts:
+            # Legacy: speed_X_alpha_Y format if both exist
             exp_name = f"speed_{name_parts['speed']}_alpha_{name_parts['alpha']}"
         else:
             # Fallback to generic naming
             exp_name = "_".join(f"{k}_{v}" for k, v in name_parts.items())
         
-        # Merge with base config
-        merged_config = deep_merge_dict(base_config, overrides)
+        # Merge: base_with_fixed + grid overrides
+        merged_config = deep_merge_dict(base_with_fixed, overrides)
         experiment_configs.append((exp_name, merged_config))
     
     return experiment_configs
