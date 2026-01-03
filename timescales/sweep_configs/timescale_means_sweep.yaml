@@ -1,0 +1,86 @@
+# Timescale Means Sweep: Neural vs Behavioral Timescale Matching
+# 
+# Research Question: What is the optimal neural timescale for a given 
+# behavioral timescale? Is there a matching principle?
+#
+# Key insight: With zero heterogeneity, we test whether τ_neural ≈ τ_behavioral
+# is optimal, or if some other relationship holds.
+#
+# Expectations:
+# - τ_neural << τ_behavioral: Network forgets too fast to integrate
+# - τ_neural >> τ_behavioral: Network too sluggish to track rapid changes  
+# - τ_neural ≈ τ_behavioral: Potentially optimal (matched dynamics)
+#
+# Total experiments: 13 neural_mean × 13 behavioral_mean = 169 experiments
+
+base_config: "timescales/base_configs/mts.yaml"
+n_seeds: 1
+
+# Fixed parameters for this sweep
+fixed_overrides:
+  # Neural timescale distribution: Gaussian with zero std (homogeneous)
+  timescales_config:
+    type: "continuous"
+    distribution: "gaussian"
+    # mean will be varied in the grid
+    std: 0.0         # Zero heterogeneity - all neurons have same τ
+    min_timescale: 0.05  # Clamp minimum (avoid instability)
+    max_timescale: 5.0   # Clamp maximum (allow larger means)
+  
+  # Behavioral timescale std = 0 (homogeneous speeds)
+  behavioral_timescale_std: 0.0
+  
+  # OU dynamics (shared)
+  linear_speed_tau: 1.0   # OU time constant for speed
+  angular_speed_mean: 0.0
+  angular_speed_std: 1.0
+  angular_speed_tau: 0.4
+  
+  # Training
+  max_epochs: 100
+  hidden_size: 512
+  
+  # Arena/place cell setup
+  arena_size: 1.1
+  place_cell_rf: 0.2  # Defines characteristic length scale
+
+grid:
+  # Neural timescale mean (seconds)
+  # Range chosen to span both faster and slower than behavioral timescales
+  timescales_config__mean:
+    - 0.01
+    - 0.1    # Very fast (α ≈ 0.63 for dt=0.1)
+    - 0.2    # Fast
+    - 0.3
+    - 0.4
+    - 0.5    # Moderate  
+    - 0.6
+    - 0.7
+    - 0.8
+    - 0.9
+    - 1.0    # Slow (matches behavioral middle)
+    - 1.5
+    - 2.0    # Very slow
+  
+  # Behavioral timescale mean (seconds)
+  # τ_behavior = place_cell_rf / linear_speed
+  # With rf=0.2m, this corresponds to speeds of 0.4, 0.2, 0.13, 0.1, 0.08 m/s
+  behavioral_timescale_mean:
+    - 0.1
+    - 0.2
+    - 0.3
+    - 0.4
+    - 0.5    # Fast movement (speed = 0.4 m/s)
+    - 0.6
+    - 0.7
+    - 0.8
+    - 0.9
+    - 1.0    # Moderate (speed = 0.2 m/s)
+    - 1.5    # Slower (speed = 0.13 m/s)
+    - 2.0    # Slow (speed = 0.1 m/s)
+    - 2.5    # Very slow (speed = 0.08 m/s)
+
+# Custom naming for experiments
+naming:
+  format: "neural_mean_{timescales_config__mean}_behav_mean_{behavioral_timescale_mean}"
+
