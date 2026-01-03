@@ -55,13 +55,17 @@ def create_multitimescale_rnn_model(
     config: dict,
 ):
     """Create MultiTimescaleRNN model and lightning module."""
+    # Check if timescales should be learned
+    learn_timescales = config["learn_timescales"]
+    
     model = MultiTimescaleRNN(
         input_size=config["input_size"],
         hidden_size=config["hidden_size"],
         output_size=config["num_place_cells"],
         dt=config["dt"],
-        timescales_config=config["timescales_config"],
+        timescales_config=config.get("timescales_config"),  # Can be None if learning
         activation=getattr(nn, config["activation"]),
+        learn_timescales=learn_timescales,
     )
 
     lightning_module = MultiTimescaleRNNLightning(

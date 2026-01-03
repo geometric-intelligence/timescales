@@ -13,8 +13,9 @@ class MultiTimescaleRNNStep(nn.Module):
         input_size: int,
         hidden_size: int,
         dt: float,
-        timescales: torch.Tensor,
+        timescales: torch.Tensor | None = None,
         activation: type[nn.Module] = nn.Tanh,
+        learn_timescales: bool = False,
     ) -> None:
         """
         Initialize the Multi-timescale RNN step.
@@ -23,21 +24,54 @@ class MultiTimescaleRNNStep(nn.Module):
         :param hidden_size: The size of the hidden state (number of neurons).
         :param dt: The time step.
         :param timescales: Tensor of shape (hidden_size,) containing timescales for each unit.
+                          Only used when learn_timescales=False. If None and learn_timescales=True,
+                          timescales are randomly initialized.
         :param activation: The activation function.
+        :param learn_timescales: If True, timescales become trainable parameters.
         """
         super().__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.dt = dt
         self.activation = activation()
+        self.learn_timescales = learn_timescales
 
-        # Register timescales and alphas as buffers (not trainable parameters)
-        self.register_buffer("timescales", timescales)
-        alphas = 1 - torch.exp(-dt / timescales)
-        self.register_buffer("alphas", alphas)
+        if learn_timescales:
+            # Learnable timescales via log-parameterization
+            # log_timescales is unconstrained; timescales = exp(log_timescales) > 0
+            # Initialize so that exp(log_timescales) gives τ roughly in [0.1, 1.0]
+            # log(0.3) ≈ -1.2, so init ~ N(−0.5, 0.5) gives reasonable starting τ
+            log_timescales = torch.randn(hidden_size) * 0.5 - 0.5
+            self.log_timescales = nn.Parameter(log_timescales)
+            # Register dt as buffer for alpha computation
+            self.register_buffer("_dt", torch.tensor(dt))
+        else:
+            # Fixed timescales (original behavior)
+            if timescales is None:
+                raise ValueError("timescales must be provided when learn_timescales=False")
+            self.register_buffer("timescales", timescales)
+            alphas = 1 - torch.exp(-dt / timescales)
+            self.register_buffer("alphas", alphas)
 
         self.W_in = nn.Linear(input_size, hidden_size)
         self.W_rec = nn.Linear(hidden_size, hidden_size)
+
+    @property
+    def current_timescales(self) -> torch.Tensor:
+        """Get current timescale values (computed from log_timescales if learnable)."""
+        if self.learn_timescales:
+            return torch.exp(self.log_timescales)
+        else:
+            return self.timescales
+
+    @property
+    def current_alphas(self) -> torch.Tensor:
+        """Get current alpha values (computed from log_timescales if learnable)."""
+        if self.learn_timescales:
+            timescales = torch.exp(self.log_timescales)
+            return 1 - torch.exp(-self._dt / timescales)
+        else:
+            return self.alphas
 
     def forward(
         self,
@@ -54,7 +88,11 @@ class MultiTimescaleRNNStep(nn.Module):
         pre_activation = self.W_in(input) + self.W_rec(hidden)
         activated = self.activation(pre_activation)
 
-        new_hidden = (1 - self.alphas) * hidden + self.alphas * activated
+        # Get alphas (either fixed or computed from learned log_timescales)
+        alphas = self.current_alphas
+
+        # Per-unit leaky integration: h_new = (1-α)*h_old + α*activated
+        new_hidden = (1 - alphas) * hidden + alphas * activated
 
         return new_hidden
 
@@ -70,8 +108,9 @@ class MultiTimescaleRNN(nn.Module):
         hidden_size: int,
         output_size: int,
         dt: float,
-        timescales_config: dict,
+        timescales_config: dict | None = None,
         activation: type[nn.Module] = nn.Tanh,
+        learn_timescales: bool = False,
     ) -> None:
         """
         Initialize the Multi-timescale RNN.
@@ -81,19 +120,35 @@ class MultiTimescaleRNN(nn.Module):
         :param output_size: The size of the output vector (number of place cells).
         :param dt: The time step size.
         :param timescales_config: Dictionary specifying how to set the timescales.
+                                  Only used when learn_timescales=False.
         :param activation: The activation function.
+        :param learn_timescales: If True, timescales become trainable parameters
+                                 (randomly initialized, timescales_config is ignored).
         """
         super().__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.output_size = output_size
         self.dt = dt
+        self.learn_timescales = learn_timescales
 
-        # Generate timescales based on configuration
-        timescales = self._generate_timescales(hidden_size, timescales_config)
+        if learn_timescales:
+            # Timescales are learned - randomly initialized in RNNStep
+            timescales = None
+            print(f"Timescales are LEARNABLE (randomly initialized)")
+        else:
+            # Generate fixed timescales based on configuration
+            if timescales_config is None:
+                raise ValueError("timescales_config must be provided when learn_timescales=False")
+            timescales = self._generate_timescales(hidden_size, timescales_config)
 
         self.rnn_step = MultiTimescaleRNNStep(
-            input_size, hidden_size, dt, timescales, activation
+            input_size=input_size,
+            hidden_size=hidden_size,
+            dt=dt,
+            timescales=timescales,
+            activation=activation,
+            learn_timescales=learn_timescales,
         )
         self.W_out = nn.Linear(hidden_size, output_size, bias=False)
 
@@ -225,9 +280,14 @@ class MultiTimescaleRNN(nn.Module):
         nn.init.xavier_uniform_(self.W_h_init.weight)
 
     def get_timescale_stats(self) -> dict:
-        """Return statistics about the timescale values."""
-        timescales = self.rnn_step.timescales
-        alphas = self.rnn_step.alphas
+        """Return statistics about the timescale values.
+        
+        Works for both fixed and learnable timescales.
+        """
+        # Use properties to get current values (works for both fixed and learned)
+        timescales = self.rnn_step.current_timescales
+        alphas = self.rnn_step.current_alphas
+        
         return {
             "timescale_min": timescales.min().item(),
             "timescale_max": timescales.max().item(),
@@ -237,6 +297,7 @@ class MultiTimescaleRNN(nn.Module):
             "alpha_max": alphas.max().item(),
             "alpha_mean": alphas.mean().item(),
             "unique_timescales": len(torch.unique(timescales)),
+            "learn_timescales": self.learn_timescales,
         }
 
 

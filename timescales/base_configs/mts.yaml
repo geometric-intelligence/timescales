@@ -12,6 +12,10 @@ hidden_size: 512 #4096
 activation: "ReLU" #"Tanh"
 
 # Timescales configuration
+# Option 1: Fixed timescales (default) - set learn_timescales: false
+# Option 2: Learnable timescales - set learn_timescales: true (timescales_config is ignored)
+learn_timescales: false  # If true, timescales become trainable parameters (randomly initialized)
+
 timescales_config:
   type: "discrete"
   values: [0.1443] # alpha 0.5
