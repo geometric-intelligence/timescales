@@ -14,7 +14,12 @@ activation: "ReLU" #"Tanh"
 # Timescales configuration
 # Option 1: Fixed timescales (default) - set learn_timescales: false
 # Option 2: Learnable timescales - set learn_timescales: true (timescales_config is ignored)
-learn_timescales: true # If true, timescales become trainable parameters (randomly initialized)
+learn_timescales: true # If true, timescales become trainable parameters
+
+# Initialization for learnable timescales:
+# - If init_timescale is not set: random initialization ~LogNormal
+# - If init_timescale is set: all timescales start at this value (uniform init)
+init_timescale: 1.0  # Set to null for random init, or a value like 0.5 for uniform init
 
 timescales_config:
   type: "discrete"

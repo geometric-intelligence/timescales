@@ -66,6 +66,7 @@ def create_multitimescale_rnn_model(
         timescales_config=config.get("timescales_config"),  # Can be None if learning
         activation=getattr(nn, config["activation"]),
         learn_timescales=learn_timescales,
+        init_timescale=config.get("init_timescale"),  # Uniform init if provided
     )
 
     lightning_module = MultiTimescaleRNNLightning(
