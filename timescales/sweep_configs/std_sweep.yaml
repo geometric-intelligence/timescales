@@ -1,0 +1,201 @@
+# Base configuration to inherit from
+base_config: "configs/mts.yaml"
+
+# Number of seeds per configuration
+n_seeds: 1
+
+# Parameter sweep configurations
+experiments:
+
+  - name: "mean05_std_000"
+    overrides:
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.5
+        std: 0
+  - name: "mean_05_std_005"
+    overrides:
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.5
+        std: 0.05
+  - name: "mean_05_std_010"
+    overrides:
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.5
+        std: 0.1
+  - name: "mean_05_std_015"
+    overrides:
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.5
+        std: 0.15
+  - name: "mean_05_std_020"
+    overrides:
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.5
+        std: 0.2
+  - name: "mean_05_std_025"
+    overrides:
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.5
+        std: 0.25
+  - name: "mean_05_std_030"
+    overrides:
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.5
+        std: 0.30
+  - name: "mean_05_std_035"
+    overrides:
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.5
+        std: 0.35
+  - name: "mean_05_std_040"
+    overrides:
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.5
+        std: 0.40
+
+  - name: "mean_03_std_000"
+    overrides:
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.3
+        std: 0
+  - name: "mean_03_std_005"
+    overrides:
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.3
+        std: 0.05
+  - name: "mean_03_std_010"
+    overrides:
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.3
+        std: 0.1
+  - name: "mean_03_std_015"
+    overrides:
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.3
+        std: 0.15
+  - name: "mean_03_std_020"
+    overrides:
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.3
+        std: 0.2
+  - name: "mean_03_std_025"
+    overrides:
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.3
+        std: 0.25
+  - name: "mean_03_std_030"
+    overrides:
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.3
+        std: 0.30
+  - name: "mean_03_std_035"
+    overrides:
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.3
+        std: 0.35
+  - name: "mean_03_std_040"
+    overrides:
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.3
+        std: 0.40
+
+  - name: "mean_07_std_000"
+    overrides:
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.7
+        std: 0
+  - name: "mean_07_std_005"
+    overrides:
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.7
+        std: 0.05
+  - name: "mean_07_std_010"
+    overrides:
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.7
+        std: 0.1
+  - name: "mean_07_std_015"
+    overrides:
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.7
+        std: 0.15
+  - name: "mean_07_std_020"
+    overrides:
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.7
+        std: 0.2
+  - name: "mean_07_std_025"
+    overrides:
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.7
+        std: 0.25
+  - name: "mean_07_std_030"
+    overrides:
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.7
+        std: 0.30
+  - name: "mean_07_std_035"
+    overrides:
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.7
+        std: 0.35
+  - name: "mean_07_std_040"
+    overrides:
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.7
+        std: 0.40
+

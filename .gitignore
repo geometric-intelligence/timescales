@@ -12,8 +12,8 @@ __pycache__/
 *.pt
 *.ckpt
 *.json
-/pirnns/logs/checkpoints/*
-/pirnns/logs/*
+/timescales/logs/checkpoints/*
+/timescales/logs/*
 
 # Animations
 *.mp4
