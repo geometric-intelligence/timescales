@@ -261,7 +261,10 @@ def single_seed(config: dict) -> dict:
         print(f"Periodic checkpoints enabled: saving every {checkpoint_every_n} epochs")
 
     if model_type == "multitimescale":
-        timescale_viz_callback = TimescaleVisualizationCallback()
+        timescale_viz_callback = TimescaleVisualizationCallback(
+            save_dir=run_dir,
+            log_every_n_epochs=config.get("viz_log_every_n_epochs", 10),
+        )
         callbacks.append(timescale_viz_callback)
 
     # Use devices and accelerator directly from config if specified
