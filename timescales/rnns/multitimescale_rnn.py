@@ -16,6 +16,7 @@ class MultiTimescaleRNNStep(nn.Module):
         timescales: torch.Tensor | None = None,
         activation: type[nn.Module] = nn.Tanh,
         learn_timescales: bool = False,
+        init_timescale: float | None = None,
     ) -> None:
         """
         Initialize the Multi-timescale RNN step.
@@ -28,6 +29,8 @@ class MultiTimescaleRNNStep(nn.Module):
                           timescales are randomly initialized.
         :param activation: The activation function.
         :param learn_timescales: If True, timescales become trainable parameters.
+        :param init_timescale: If provided and learn_timescales=True, initialize all timescales
+                              to this value (uniform initialization). If None, use random init.
         """
         super().__init__()
         self.input_size = input_size
@@ -39,9 +42,14 @@ class MultiTimescaleRNNStep(nn.Module):
         if learn_timescales:
             # Learnable timescales via log-parameterization
             # log_timescales is unconstrained; timescales = exp(log_timescales) > 0
-            # Initialize so that exp(log_timescales) gives τ roughly in [0.1, 1.0]
-            # log(0.3) ≈ -1.2, so init ~ N(−0.5, 0.5) gives reasonable starting τ
-            log_timescales = torch.randn(hidden_size) * 0.5 - 0.5
+            if init_timescale is not None:
+                # Uniform initialization: all timescales start at init_timescale
+                log_timescales = torch.full((hidden_size,), float(torch.log(torch.tensor(init_timescale))))
+            else:
+                # Random initialization
+                # Initialize so that exp(log_timescales) gives τ roughly in [0.1, 1.0]
+                # log(0.3) ≈ -1.2, so init ~ N(−0.5, 0.5) gives reasonable starting τ
+                log_timescales = torch.randn(hidden_size) * 0.5 - 0.5
             self.log_timescales = nn.Parameter(log_timescales)
             # Register dt as buffer for alpha computation
             self.register_buffer("_dt", torch.tensor(dt))
@@ -111,6 +119,7 @@ class MultiTimescaleRNN(nn.Module):
         timescales_config: dict | None = None,
         activation: type[nn.Module] = nn.Tanh,
         learn_timescales: bool = False,
+        init_timescale: float | None = None,
     ) -> None:
         """
         Initialize the Multi-timescale RNN.
@@ -124,6 +133,8 @@ class MultiTimescaleRNN(nn.Module):
         :param activation: The activation function.
         :param learn_timescales: If True, timescales become trainable parameters
                                  (randomly initialized, timescales_config is ignored).
+        :param init_timescale: If provided and learn_timescales=True, initialize all 
+                              timescales to this value (uniform). If None, use random init.
         """
         super().__init__()
         self.input_size = input_size
@@ -131,11 +142,15 @@ class MultiTimescaleRNN(nn.Module):
         self.output_size = output_size
         self.dt = dt
         self.learn_timescales = learn_timescales
+        self.init_timescale = init_timescale
 
         if learn_timescales:
-            # Timescales are learned - randomly initialized in RNNStep
+            # Timescales are learned
             timescales = None
-            print(f"Timescales are LEARNABLE (randomly initialized)")
+            if init_timescale is not None:
+                print(f"Timescales are LEARNABLE (uniform init at τ={init_timescale}s)")
+            else:
+                print(f"Timescales are LEARNABLE (randomly initialized)")
         else:
             # Generate fixed timescales based on configuration
             if timescales_config is None:
@@ -149,6 +164,7 @@ class MultiTimescaleRNN(nn.Module):
             timescales=timescales,
             activation=activation,
             learn_timescales=learn_timescales,
+            init_timescale=init_timescale,
         )
         self.W_out = nn.Linear(hidden_size, output_size, bias=False)
 

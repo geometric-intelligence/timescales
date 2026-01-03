@@ -490,34 +490,102 @@ class TrajectoryVisualizationCallback(L.Callback):
 
 
 class TimescaleVisualizationCallback(L.Callback):
-    """Callback to visualize timescale distributions for MultiTimescaleRNN."""
+    """Callback to visualize and track timescale distributions for MultiTimescaleRNN.
+    
+    For fixed timescales: logs once at the start of training.
+    For learnable timescales: logs periodically and saves timescale history to file.
+    """
 
-    def __init__(self, log_at_epoch: int = 0):
+    def __init__(
+        self,
+        save_dir: str = None,
+        log_every_n_epochs: int = 10,
+        log_at_epoch: int = 0,  # Kept for backward compatibility
+    ):
         """
-        :param log_at_epoch: Epoch at which to log the timescale visualization (default: 0 = start of training)
+        :param save_dir: Directory to save timescale history (required for learnable timescales)
+        :param log_every_n_epochs: How often to log visualizations for learnable timescales
+        :param log_at_epoch: Epoch at which to log for fixed timescales (backward compat)
         """
         super().__init__()
+        self.save_dir = save_dir
+        self.log_every_n_epochs = log_every_n_epochs
         self.log_at_epoch = log_at_epoch
-        self.logged = False
+        self.logged_fixed = False  # For fixed timescales (log once)
+        
+        # History tracking for learnable timescales
+        self.timescale_history = {
+            "epochs": [],
+            "mean": [],
+            "std": [],
+            "min": [],
+            "max": [],
+            "percentile_10": [],
+            "percentile_25": [],
+            "percentile_50": [],
+            "percentile_75": [],
+            "percentile_90": [],
+            # Store full timescale vectors at key epochs
+            "full_timescales": {},
+        }
+
+    def _should_log(self, trainer: L.Trainer, is_learnable: bool) -> bool:
+        """Determine if we should log at this epoch."""
+        epoch = trainer.current_epoch
+        
+        if is_learnable:
+            # For learnable: log at epoch 0 and every N epochs
+            return epoch == 0 or epoch % self.log_every_n_epochs == 0
+        else:
+            # For fixed: log once at specified epoch
+            return epoch == self.log_at_epoch and not self.logged_fixed
 
     @rank_zero_only
-    def on_train_epoch_start(
+    def on_train_epoch_end(
         self, trainer: L.Trainer, pl_module: L.LightningModule
     ) -> None:
-        """Log timescale visualization at the specified epoch."""
-
-        # Only log once at the specified epoch
-        if trainer.current_epoch != self.log_at_epoch or self.logged:
-            return
+        """Track and log timescale evolution at end of each epoch."""
 
         # Only works with MultiTimescaleRNN
         if not isinstance(pl_module.model, MultiTimescaleRNN):
             return
 
         model = pl_module.model
-        timescales = model.rnn_step.timescales.cpu().numpy()
-        alphas = model.rnn_step.alphas.cpu().numpy()
+        is_learnable = model.learn_timescales
+        timescales = model.rnn_step.current_timescales.detach().cpu().numpy()
+        alphas = model.rnn_step.current_alphas.detach().cpu().numpy()
         dt = model.dt
+        epoch = trainer.current_epoch
+
+        # Always record statistics for learnable timescales
+        if is_learnable:
+            self.timescale_history["epochs"].append(epoch)
+            self.timescale_history["mean"].append(float(timescales.mean()))
+            self.timescale_history["std"].append(float(timescales.std()))
+            self.timescale_history["min"].append(float(timescales.min()))
+            self.timescale_history["max"].append(float(timescales.max()))
+            self.timescale_history["percentile_10"].append(float(np.percentile(timescales, 10)))
+            self.timescale_history["percentile_25"].append(float(np.percentile(timescales, 25)))
+            self.timescale_history["percentile_50"].append(float(np.percentile(timescales, 50)))
+            self.timescale_history["percentile_75"].append(float(np.percentile(timescales, 75)))
+            self.timescale_history["percentile_90"].append(float(np.percentile(timescales, 90)))
+            
+            # Save full timescales at key epochs (start, every N epochs, and will add final at end)
+            if epoch == 0 or epoch % self.log_every_n_epochs == 0:
+                self.timescale_history["full_timescales"][str(epoch)] = timescales.tolist()
+            
+            # Save history to file
+            if self.save_dir is not None:
+                history_path = os.path.join(self.save_dir, "timescale_history.json")
+                with open(history_path, "w") as f:
+                    json.dump(self.timescale_history, f, indent=2)
+
+        # Visualize if appropriate
+        if not self._should_log(trainer, is_learnable):
+            return
+        
+        if not is_learnable:
+            self.logged_fixed = True
 
         # Get the original configuration if available
         timescale_config = getattr(model, "_timescale_config", None)
@@ -725,13 +793,21 @@ class TimescaleVisualizationCallback(L.Callback):
                 )
             ax4.legend(fontsize=8)
 
-        # Overall title
-        config_str = (
-            f"Config: {timescale_config}" if timescale_config else "No config available"
-        )
+        # Overall title - include epoch for learnable timescales
+        is_learnable = model.learn_timescales
+        epoch = trainer.current_epoch
+        
+        if is_learnable:
+            title_prefix = f"Epoch {epoch} - Learned"
+        else:
+            config_str = (
+                f"Config: {timescale_config}" if timescale_config else "No config available"
+            )
+            title_prefix = f"Fixed - {config_str}"
+            
         distribution_type = "Discrete" if is_discrete else "Continuous"
         fig.suptitle(
-            f"Timescale Analysis ({distribution_type}) - {len(timescales)} units\n{config_str}",
+            f"Timescale Analysis ({distribution_type}) - {len(timescales)} units\n{title_prefix}",
             fontsize=14,
         )
 
@@ -739,14 +815,39 @@ class TimescaleVisualizationCallback(L.Callback):
 
         # Log to wandb
         if trainer.logger is not None and hasattr(trainer.logger, "experiment"):
+            log_key = f"timescale_analysis_epoch_{epoch}" if is_learnable else "timescale_analysis"
             trainer.logger.experiment.log(
                 {
-                    "timescale_analysis": wandb.Image(fig),
+                    log_key: wandb.Image(fig),
                 }
             )
 
         plt.close(fig)
-        self.logged = True
+
+    @rank_zero_only
+    def on_train_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+        """Save final timescales at the end of training."""
+        if not isinstance(pl_module.model, MultiTimescaleRNN):
+            return
+        
+        model = pl_module.model
+        if not model.learn_timescales:
+            return
+        
+        # Save final timescales
+        timescales = model.rnn_step.current_timescales.detach().cpu().numpy()
+        final_epoch = trainer.current_epoch
+        
+        # Add final epoch to full timescales if not already there
+        if str(final_epoch) not in self.timescale_history["full_timescales"]:
+            self.timescale_history["full_timescales"][str(final_epoch)] = timescales.tolist()
+        
+        # Save final history
+        if self.save_dir is not None:
+            history_path = os.path.join(self.save_dir, "timescale_history.json")
+            with open(history_path, "w") as f:
+                json.dump(self.timescale_history, f, indent=2)
+            print(f"Timescale history saved to: {history_path}")
 
     def _plot_theoretical_distribution(
         self, ax, config: dict, actual_timescales: np.ndarray

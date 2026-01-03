@@ -14,7 +14,12 @@ activation: "ReLU" #"Tanh"
 # Timescales configuration
 # Option 1: Fixed timescales (default) - set learn_timescales: false
 # Option 2: Learnable timescales - set learn_timescales: true (timescales_config is ignored)
-learn_timescales: false  # If true, timescales become trainable parameters (randomly initialized)
+learn_timescales: true # If true, timescales become trainable parameters
+
+# Initialization for learnable timescales:
+# - If init_timescale is not set: random initialization ~LogNormal
+# - If init_timescale is set: all timescales start at this value (uniform init)
+init_timescale: 1.0  # Set to null for random init, or a value like 0.5 for uniform init
 
 timescales_config:
   type: "discrete"
@@ -32,12 +37,12 @@ arena_size: 1.1
 # Speed parameterization: Choose ONE of two options:
 # 
 # Option A - Direct speed parameters:
-linear_speed_mean: 0.2    # m/s
-linear_speed_std: 0.5     # m/s (OU noise std)
+# linear_speed_mean: 0.6    # m/s
+# linear_speed_std: 0.1     # m/s (OU noise std)
 #
 # Option B - Behavioral timescale parameters (τ_behavior = place_cell_rf / speed):
-# behavioral_timescale_mean: 1.0   # seconds
-# behavioral_timescale_std: 0.2    # seconds
+behavioral_timescale_mean: 1.0   # seconds
+behavioral_timescale_std: 0.2    # seconds
 # If Option B is used, linear_speed params are computed automatically.
 # This makes behavioral and neural timescale distributions directly comparable.
 
