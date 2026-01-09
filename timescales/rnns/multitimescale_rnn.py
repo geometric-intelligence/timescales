@@ -17,6 +17,8 @@ class MultiTimescaleRNNStep(nn.Module):
         activation: type[nn.Module] = nn.Tanh,
         learn_timescales: bool = False,
         init_timescale: float | None = None,
+        normalize_hidden: bool = False,
+        zero_diag_wrec: bool = False,
     ) -> None:
         """
         Initialize the Multi-timescale RNN step.
@@ -31,6 +33,8 @@ class MultiTimescaleRNNStep(nn.Module):
         :param learn_timescales: If True, timescales become trainable parameters.
         :param init_timescale: If provided and learn_timescales=True, initialize all timescales
                               to this value (uniform initialization). If None, use random init.
+        :param normalize_hidden: If True, apply LayerNorm to hidden state after each step.
+        :param zero_diag_wrec: If True, enforce diag(W_rec) = 0 (no self-connections).
         """
         super().__init__()
         self.input_size = input_size
@@ -38,6 +42,14 @@ class MultiTimescaleRNNStep(nn.Module):
         self.dt = dt
         self.activation = activation()
         self.learn_timescales = learn_timescales
+        self.normalize_hidden = normalize_hidden
+        self.zero_diag_wrec = zero_diag_wrec
+
+        # Optional LayerNorm for hidden state normalization
+        if normalize_hidden:
+            self.layer_norm = nn.LayerNorm(hidden_size)
+        else:
+            self.layer_norm = None
 
         if learn_timescales:
             # Learnable timescales via log-parameterization
@@ -63,6 +75,20 @@ class MultiTimescaleRNNStep(nn.Module):
 
         self.W_in = nn.Linear(input_size, hidden_size)
         self.W_rec = nn.Linear(hidden_size, hidden_size)
+        
+        # Enforce zero diagonal on W_rec if requested
+        if zero_diag_wrec:
+            # 1. Initialize diagonal to zero
+            with torch.no_grad():
+                self.W_rec.weight.fill_diagonal_(0)
+            
+            # 2. Register hook to zero out diagonal gradients (so they stay frozen at 0)
+            def zero_diag_grad_hook(grad):
+                grad = grad.clone()
+                grad.fill_diagonal_(0)
+                return grad
+            
+            self.W_rec.weight.register_hook(zero_diag_grad_hook)
 
     @property
     def current_timescales(self) -> torch.Tensor:
@@ -102,6 +128,10 @@ class MultiTimescaleRNNStep(nn.Module):
         # Per-unit leaky integration: h_new = (1-α)*h_old + α*activated
         new_hidden = (1 - alphas) * hidden + alphas * activated
 
+        # Optional LayerNorm
+        if self.layer_norm is not None:
+            new_hidden = self.layer_norm(new_hidden)
+
         return new_hidden
 
 
@@ -120,6 +150,8 @@ class MultiTimescaleRNN(nn.Module):
         activation: type[nn.Module] = nn.Tanh,
         learn_timescales: bool = False,
         init_timescale: float | None = None,
+        normalize_hidden: bool = False,
+        zero_diag_wrec: bool = False,
     ) -> None:
         """
         Initialize the Multi-timescale RNN.
@@ -135,6 +167,8 @@ class MultiTimescaleRNN(nn.Module):
                                  (randomly initialized, timescales_config is ignored).
         :param init_timescale: If provided and learn_timescales=True, initialize all 
                               timescales to this value (uniform). If None, use random init.
+        :param normalize_hidden: If True, apply LayerNorm to hidden state after each step.
+        :param zero_diag_wrec: If True, enforce diag(W_rec) = 0 (no self-connections).
         """
         super().__init__()
         self.input_size = input_size
@@ -143,6 +177,8 @@ class MultiTimescaleRNN(nn.Module):
         self.dt = dt
         self.learn_timescales = learn_timescales
         self.init_timescale = init_timescale
+        self.normalize_hidden = normalize_hidden
+        self.zero_diag_wrec = zero_diag_wrec
 
         if learn_timescales:
             # Timescales are learned
@@ -165,6 +201,8 @@ class MultiTimescaleRNN(nn.Module):
             activation=activation,
             learn_timescales=learn_timescales,
             init_timescale=init_timescale,
+            normalize_hidden=normalize_hidden,
+            zero_diag_wrec=zero_diag_wrec,
         )
         self.W_out = nn.Linear(hidden_size, output_size, bias=False)
 

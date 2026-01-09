@@ -1,0 +1,139 @@
+# Normalization Comparison Sweep
+# 
+# Compare hidden state dynamics with and without LayerNorm
+# Tests: 2 activations × 2 normalization × 3 timescale types = 12 experiments
+
+base_config: "base_configs/mts.yaml"
+n_seeds: 1
+
+fixed_overrides:
+  # Standard behavioral settings
+  behavioral_timescale_mean: 1.0
+  behavioral_timescale_std: 0.2
+  
+  # Training
+  max_epochs: 200
+  num_trajectories: 100000
+  hidden_size: 512
+
+# Use explicit list of experiments since timescale types require different parameters
+experiments:
+  # ============ ReLU + No Normalization ============
+  - name: "ReLU_nonorm_discrete"
+    overrides:
+      activation: "ReLU"
+      normalize_hidden: false
+      learn_timescales: false
+      timescales_config:
+        type: "discrete"
+        values: [0.5]
+  
+  - name: "ReLU_nonorm_gaussian"
+    overrides:
+      activation: "ReLU"
+      normalize_hidden: false
+      learn_timescales: false
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.5
+        std: 0.2
+        min_timescale: 0.05
+        max_timescale: 2.0
+  
+  - name: "ReLU_nonorm_learnable"
+    overrides:
+      activation: "ReLU"
+      normalize_hidden: false
+      learn_timescales: true
+      init_timescale: 0.5
+
+  # ============ ReLU + Normalization ============
+  - name: "ReLU_norm_discrete"
+    overrides:
+      activation: "ReLU"
+      normalize_hidden: true
+      learn_timescales: false
+      timescales_config:
+        type: "discrete"
+        values: [0.5]
+  
+  - name: "ReLU_norm_gaussian"
+    overrides:
+      activation: "ReLU"
+      normalize_hidden: true
+      learn_timescales: false
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.5
+        std: 0.2
+        min_timescale: 0.05
+        max_timescale: 2.0
+  
+  - name: "ReLU_norm_learnable"
+    overrides:
+      activation: "ReLU"
+      normalize_hidden: true
+      learn_timescales: true
+      init_timescale: 0.5
+
+  # ============ Tanh + No Normalization ============
+  - name: "Tanh_nonorm_discrete"
+    overrides:
+      activation: "Tanh"
+      normalize_hidden: false
+      learn_timescales: false
+      timescales_config:
+        type: "discrete"
+        values: [0.5]
+  
+  - name: "Tanh_nonorm_gaussian"
+    overrides:
+      activation: "Tanh"
+      normalize_hidden: false
+      learn_timescales: false
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.5
+        std: 0.2
+        min_timescale: 0.05
+        max_timescale: 2.0
+  
+  - name: "Tanh_nonorm_learnable"
+    overrides:
+      activation: "Tanh"
+      normalize_hidden: false
+      learn_timescales: true
+      init_timescale: 0.5
+
+  # ============ Tanh + Normalization ============
+  - name: "Tanh_norm_discrete"
+    overrides:
+      activation: "Tanh"
+      normalize_hidden: true
+      learn_timescales: false
+      timescales_config:
+        type: "discrete"
+        values: [0.5]
+  
+  - name: "Tanh_norm_gaussian"
+    overrides:
+      activation: "Tanh"
+      normalize_hidden: true
+      learn_timescales: false
+      timescales_config:
+        type: "continuous"
+        distribution: "gaussian"
+        mean: 0.5
+        std: 0.2
+        min_timescale: 0.05
+        max_timescale: 2.0
+  
+  - name: "Tanh_norm_learnable"
+    overrides:
+      activation: "Tanh"
+      normalize_hidden: true
+      learn_timescales: true
+      init_timescale: 0.5

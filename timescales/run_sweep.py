@@ -169,13 +169,18 @@ def generate_experiment_configs(sweep_config: Dict) -> List[Tuple[str, Dict]]:
     
     # Original experiments list mode
     experiments = sweep_config["experiments"]
+    fixed_overrides = sweep_config.get("fixed_overrides", {})
+    
+    # Apply fixed overrides to base config first
+    base_with_fixed = deep_merge_dict(base_config, fixed_overrides)
+    
     experiment_configs = []
     for exp in experiments:
         exp_name = exp["name"]
         overrides = exp.get("overrides", {})
 
-        # Merge base config with overrides
-        merged_config = deep_merge_dict(base_config, overrides)
+        # Merge: base_with_fixed + experiment-specific overrides
+        merged_config = deep_merge_dict(base_with_fixed, overrides)
         experiment_configs.append((exp_name, merged_config))
 
     return experiment_configs

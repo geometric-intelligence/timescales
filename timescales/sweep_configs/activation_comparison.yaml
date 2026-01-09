@@ -1,0 +1,29 @@
+# Activation Comparison Sweep
+# 
+# Quick experiment comparing ReLU vs Tanh activations
+# Goal: Compare hidden state magnitude dynamics between activations
+
+base_config: "base_configs/mts.yaml"
+n_seeds: 1
+
+fixed_overrides:
+  # Use simple homogeneous timescales
+  learn_timescales: true
+  
+  # Standard behavioral settings
+  behavioral_timescale_mean: 1.0
+  behavioral_timescale_std: 0.2
+  
+  # Quick training
+  max_epochs: 200
+  num_trajectories: 100000
+  hidden_size: 512
+
+grid:
+  activation:
+    - "ReLU"
+    - "Tanh"
+
+naming:
+  format: "activation_{activation}"
+

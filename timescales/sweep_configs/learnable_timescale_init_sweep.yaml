@@ -1,0 +1,63 @@
+# Learnable Timescale Initialization Sweep
+# 
+# Research Question: Does the final learned timescale distribution depend on 
+# the initial timescale value, or does training converge to a similar 
+# distribution regardless of initialization?
+#
+# Key insight: If different initializations converge to similar final distributions,
+# this suggests there's an "optimal" timescale distribution that the network learns
+# to match the behavioral timescale of the task.
+#
+# Experiment design:
+# - All networks have learnable timescales
+# - Each experiment starts with a different uniform init_timescale
+# - Same behavioral timescale (τ_behavior = 1.0s) for all
+# - Compare final timescale distributions across initializations
+#
+# Total experiments: 7 init values × 1 seeds = 7 experiments
+
+base_config: "base_configs/mts.yaml"
+n_seeds: 1
+
+# Fixed parameters for this sweep
+fixed_overrides:
+  # Learnable timescales
+  learn_timescales: true
+  
+  # Fixed behavioral timescale
+  behavioral_timescale_mean: 1.0   # seconds
+  behavioral_timescale_std: 0.2    # Some variability in speeds
+  
+  # OU dynamics
+  linear_speed_tau: 1.0
+  angular_speed_mean: 0.0
+  angular_speed_std: 1.2
+  angular_speed_tau: 0.4
+  
+  # Training - enough epochs to see convergence
+  max_epochs: 200
+  hidden_size: 512
+  
+  # Arena/place cell setup
+  arena_size: 1.1
+  place_cell_rf: 0.2
+  
+  # Visualization - track timescale evolution
+  viz_log_every_n_epochs: 10
+
+grid:
+  # Initial timescale values (uniform initialization)
+  # Range spans from very fast to very slow timescales
+  init_timescale:
+    - 0.1    # Very fast (α ≈ 0.63)
+    - 0.2
+    - 0.3
+    - 0.5    # Moderate-fast
+    - 0.7
+    - 1.0    # Matches behavioral mean
+    - 1.5
+
+# Custom naming for experiments
+naming:
+  format: "init_tau_{init_timescale}"
+
