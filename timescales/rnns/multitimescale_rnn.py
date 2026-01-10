@@ -18,7 +18,7 @@ class MultiTimescaleRNNStep(nn.Module):
         learn_timescales: bool = False,
         init_timescale: float | None = None,
         normalize_hidden: bool = False,
-        zero_diag_wrec: bool = False,
+        zero_diag_wrec: bool = True,
     ) -> None:
         """
         Initialize the Multi-timescale RNN step.
@@ -76,19 +76,10 @@ class MultiTimescaleRNNStep(nn.Module):
         self.W_in = nn.Linear(input_size, hidden_size)
         self.W_rec = nn.Linear(hidden_size, hidden_size)
         
-        # Enforce zero diagonal on W_rec if requested
+        # Enforce zero diagonal on W_rec if requested (init to 0 + freeze via gradient hook)
         if zero_diag_wrec:
-            # 1. Initialize diagonal to zero
-            with torch.no_grad():
-                self.W_rec.weight.fill_diagonal_(0)
-            
-            # 2. Register hook to zero out diagonal gradients (so they stay frozen at 0)
-            def zero_diag_grad_hook(grad):
-                grad = grad.clone()
-                grad.fill_diagonal_(0)
-                return grad
-            
-            self.W_rec.weight.register_hook(zero_diag_grad_hook)
+            self.W_rec.weight.data.fill_diagonal_(0)
+            self.W_rec.weight.register_hook(lambda g: g.clone().fill_diagonal_(0))
 
     @property
     def current_timescales(self) -> torch.Tensor:

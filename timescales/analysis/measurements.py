@@ -127,8 +127,6 @@ class PositionDecodingMeasurement(Measurement):
                     model_device
                 )  # [B, T, num_place_cells]
 
-                assert isinstance(model, (RNN, MultiTimescaleRNN)), "Unknown model type"
-
                 _, outputs = model(
                     inputs=inputs,
                     place_cells_0=target_place_cells[:, 0, :],
