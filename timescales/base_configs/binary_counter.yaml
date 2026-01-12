@@ -1,0 +1,54 @@
+# Binary Counter Task Configuration
+# A hierarchical multi-timescale task where:
+# - Level 0 flips randomly with probability base_flip_prob
+# - Level i flips when level i-1 transitions 1→0 (carry-based coupling)
+# - Network observes only noisy level 0 and must predict all levels
+
+# General settings
+project_name: "binary_counter"
+model_type: "multitimescale"
+task: "binary_counter"
+seed: 0
+
+# Device configuration
+accelerator: "gpu"
+devices: "auto"
+
+# Task parameters
+n_levels: 3                    # Number of hierarchical levels
+base_flip_prob: 0.1            # P(s_0 flips) per timestep -> τ_0 ≈ 10 steps
+noise_std: 0.0                 # Observation noise on inputs
+observe_all_levels: false      # If true, observe all levels (easier)
+input_encoding: "noisy_binary" # "noisy_binary" or "flip_events"
+
+# Trajectory parameters
+num_time_steps: 500            # Steps per trajectory
+dt: 0.02                       # Time step (used for timescale computation)
+
+# Model parameters
+hidden_size: 256
+activation: "ReLU"
+
+# Timescale configuration (for multitimescale model)
+learn_timescales: true
+init_timescale: 0.5            # Initial timescale for learnable mode
+normalize_hidden: false
+zero_diag_wrec: true
+
+# Training parameters
+learning_rate: 0.001
+weight_decay: 0.0001
+step_size: 100                 # LR scheduler step size
+gamma: 0.5                     # LR scheduler gamma
+max_epochs: 200
+num_trajectories: 10000
+batch_size: 200
+num_workers: 4
+train_val_split: 0.8
+
+# Logging
+log_every_n_epochs: 5
+viz_log_every_n_epochs: 10
+grad_log_every_n_steps: 100
+grad_track_per_weight_matrix: true
+

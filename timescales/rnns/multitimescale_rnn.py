@@ -282,23 +282,27 @@ class MultiTimescaleRNN(nn.Module):
     def forward(
         self,
         inputs: torch.Tensor,
-        place_cells_0: torch.Tensor,
+        init_context: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass through the multi-timescale RNN.
 
         :param inputs: (batch, time, input_size)
-        :param place_cells_0: (batch, output_size) - used to initialize the hidden state
+        :param init_context: (batch, output_size) - optional context to initialize hidden state.
+                            If None, hidden state is initialized to zeros.
 
         :return: hidden_states: (batch, time, hidden_size)
         :return: outputs: (batch, time, output_size)
         """
-        _, seq_len, _ = inputs.shape
+        batch_size, seq_len, _ = inputs.shape
 
         # Initialize hidden state
         hidden_states = []
         outputs = []
-        hidden = self.W_h_init(place_cells_0)
+        if init_context is not None:
+            hidden = self.W_h_init(init_context)
+        else:
+            hidden = torch.zeros(batch_size, self.hidden_size, device=inputs.device)
 
         for t in range(seq_len):
             input_t = inputs[:, t, :]
@@ -354,6 +358,7 @@ class MultiTimescaleRNNLightning(L.LightningModule):
         weight_decay: float,
         step_size: int,
         gamma: float,
+        task: str = "path_integration",
     ) -> None:
         """
         Initialize the Multi-timescale RNN Lightning module.
@@ -363,6 +368,7 @@ class MultiTimescaleRNNLightning(L.LightningModule):
         :param weight_decay: The weight decay for the recurrent weights.
         :param step_size: The step size for the learning rate scheduler.
         :param gamma: The gamma for the learning rate scheduler.
+        :param task: The task type ("path_integration" or "binary_counter").
         """
         super().__init__()
         self.model = model
@@ -370,19 +376,44 @@ class MultiTimescaleRNNLightning(L.LightningModule):
         self.weight_decay = weight_decay
         self.step_size = step_size
         self.gamma = gamma
+        self.task = task
+        
+        # Task-specific loss function
+        if task == "binary_counter":
+            self.loss_fn = nn.BCEWithLogitsLoss()
+
+    def _compute_loss(self, outputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """Compute task-specific loss."""
+        if self.task == "path_integration":
+            # Cross-entropy loss for place cell prediction
+            y = targets.reshape(-1, self.model.output_size)
+            yhat = torch.softmax(outputs.reshape(-1, self.model.output_size), dim=-1)
+            loss = -(y * torch.log(yhat + 1e-8)).sum(-1).mean()
+        elif self.task == "binary_counter":
+            # BCE loss for binary state prediction
+            loss = self.loss_fn(
+                outputs.reshape(-1, self.model.output_size),
+                targets.reshape(-1, self.model.output_size)
+            )
+        else:
+            raise ValueError(f"Unknown task: {self.task}")
+        return loss
 
     def training_step(self, batch) -> torch.Tensor:
-        inputs, target_positions, target_place_cells = batch
+        inputs, aux_info, targets = batch
+        
+        if self.task == "path_integration":
+            # Use first place cell activation for initialization
+            init_context = targets[:, 0, :]
+        else:
+            # Use zeros for initialization in other tasks
+            init_context = None
+            
         hidden_states, outputs = self.model(
-            inputs=inputs, place_cells_0=target_place_cells[:, 0, :]
+            inputs=inputs, init_context=init_context
         )
 
-        # Cross-entropy loss
-        y = target_place_cells.reshape(-1, self.model.output_size)
-        yhat = torch.softmax(outputs.reshape(-1, self.model.output_size), dim=-1)
-        loss = (
-            -(y * torch.log(yhat + 1e-8)).sum(-1).mean()
-        )  # Add small epsilon for numerical stability
+        loss = self._compute_loss(outputs, targets)
 
         # Weight regularization on recurrent weights
         loss += self.weight_decay * (self.model.rnn_step.W_rec.weight**2).sum()
@@ -399,17 +430,18 @@ class MultiTimescaleRNNLightning(L.LightningModule):
         return loss
 
     def validation_step(self, batch) -> torch.Tensor:
-        inputs, target_positions, target_place_cells = batch
+        inputs, aux_info, targets = batch
+        
+        if self.task == "path_integration":
+            init_context = targets[:, 0, :]
+        else:
+            init_context = None
+            
         hidden_states, outputs = self.model(
-            inputs=inputs, place_cells_0=target_place_cells[:, 0, :]
+            inputs=inputs, init_context=init_context
         )
 
-        # Cross-entropy loss
-        y = target_place_cells.reshape(-1, self.model.output_size)
-        yhat = torch.softmax(outputs.reshape(-1, self.model.output_size), dim=-1)
-        loss = (
-            -(y * torch.log(yhat + 1e-8)).sum(-1).mean()
-        )  # Add small epsilon for numerical stability
+        loss = self._compute_loss(outputs, targets)
 
         # Weight regularization on recurrent weights
         loss += self.weight_decay * (self.model.rnn_step.W_rec.weight**2).sum()
