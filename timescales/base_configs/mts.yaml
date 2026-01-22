@@ -73,7 +73,7 @@ gamma: 0.5
 max_epochs: 200
 
 # === Callback configs ===
-decode_k: 3
+# decode_k: 3
 log_every_n_epochs: 1
 viz_log_every_n_epochs: 10
 

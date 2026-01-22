@@ -6,6 +6,7 @@ import argparse
 import yaml
 import torch
 import os
+import wandb
 from lightning.pytorch.utilities.rank_zero import rank_zero_only
 from callbacks import (
     LossLoggerCallback,
@@ -18,8 +19,6 @@ from callbacks import (
 from timescales.analysis.measurements import PositionDecodingMeasurement
 
 from timescales.datamodules import PathIntegrationDataModule, HierarchicalCounterDataModule
-
-from timescales.rnns.rnn import RNN, RNNLightning
 
 
 def create_datamodule(config: dict):
@@ -95,30 +94,6 @@ log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "logs"))
 print("Log directory:", log_dir)
 
 
-def create_vanilla_rnn_model(
-    config: dict,
-):
-    """Create vanilla PathIntRNN model and lightning module."""
-    model = RNN(
-        input_size=config["input_size"],
-        hidden_size=config["hidden_size"],
-        output_size=config["output_size"],
-        alpha=config["alpha"],
-        activation=getattr(nn, config["activation"]),
-    )
-
-    lightning_module = RNNLightning(
-        model=model,
-        learning_rate=config["learning_rate"],
-        weight_decay=config["weight_decay"],
-        step_size=config["step_size"],
-        gamma=config["gamma"],
-        task=config.get("task", "path_integration"),
-    )
-
-    return model, lightning_module
-
-
 def create_multitimescale_rnn_model(
     config: dict,
 ):
@@ -135,6 +110,7 @@ def create_multitimescale_rnn_model(
         activation=getattr(nn, config["activation"]),
         learn_timescales=learn_timescales,
         init_timescale=config.get("init_timescale"),  # Uniform init if provided
+        shared_timescale=config.get("shared_timescale", False),  # Single shared τ for all neurons
         normalize_hidden=config.get("normalize_hidden", False),
         zero_diag_wrec=config.get("zero_diag_wrec", True),
     )
@@ -180,11 +156,24 @@ def single_seed(config: dict) -> dict:
             f"{config['project_name']}_{config['experiment_name']}_seed{seed}_{run_id}"
         )
         wandb_group = os.path.basename(config["sweep_dir"])  # Group by sweep name
+        wandb_job_type = config["experiment_name"]  # Job type = experiment variant
     else:
         # Single run mode: save in log_dir/single_runs/{model_type}_{run_id}/
         run_dir = os.path.join(log_dir, "single_runs", f"{model_type}_{run_id}")
         wandb_name = f"{config['project_name']}_{model_type}_{run_id}"
         wandb_group = None
+        wandb_job_type = "single_run"
+
+    # Build tags for easy filtering
+    wandb_tags = [model_type]
+    if config.get("activation"):
+        wandb_tags.append(config["activation"])
+    if config.get("learn_timescales"):
+        wandb_tags.append("learnable_timescales")
+        if config.get("init_timescale") is not None:
+            wandb_tags.append(f"init_tau_{config['init_timescale']}")
+    if "experiment_name" in config:
+        wandb_tags.append(config["experiment_name"])
 
     # Create checkpoints subdirectory
     checkpoints_dir = os.path.join(run_dir, "checkpoints")
@@ -193,6 +182,8 @@ def single_seed(config: dict) -> dict:
         project=config["project_name"],
         name=wandb_name,
         group=wandb_group,
+        job_type=wandb_job_type,
+        tags=wandb_tags,
         dir=log_dir,
         save_dir=log_dir,
         config=config,
@@ -212,19 +203,15 @@ def single_seed(config: dict) -> dict:
 
     print("Data prepared")
 
-    # Create model based on type
-    if model_type == "vanilla":
-        model, lightning_module = create_vanilla_rnn_model(config)
-        print("Vanilla PathIntRNN initialized")
-    elif model_type == "multitimescale":
-        model, lightning_module = create_multitimescale_rnn_model(config)
-        print("MultiTimescaleRNN initialized")
-        timescale_stats = model.get_timescale_stats()
-        print(f"Timescale statistics: {timescale_stats}")
-    else:
-        raise ValueError(f"Unknown model type: {model_type}")
-
-    print(f"{model_type.capitalize()} Lightning module initialized")
+    # Create model
+    if model_type != "multitimescale":
+        raise ValueError(f"Unknown model type: {model_type}. Only 'multitimescale' is supported.")
+    
+    model, lightning_module = create_multitimescale_rnn_model(config)
+    print("MultiTimescaleRNN initialized")
+    timescale_stats = model.get_timescale_stats()
+    print(f"Timescale statistics: {timescale_stats}")
+    print("Lightning module initialized")
 
     @rank_zero_only
     def create_directories():
@@ -259,24 +246,26 @@ def single_seed(config: dict) -> dict:
 
     loss_logger = LossLoggerCallback(save_dir=run_dir)
 
-    # Gradient statistics callback (task-agnostic)
-    gradient_stats_callback = GradientStatisticsCallback(
-        save_dir=run_dir,
-        log_every_n_steps=config.get("grad_log_every_n_steps", 100),
-        track_per_weight_matrix=config.get("grad_track_per_weight_matrix", True),
-    )
-
     # Build callbacks list
     callbacks = [
         checkpoint_callback,
         loss_logger,
-        gradient_stats_callback,
     ]
+    
+    # Optional: Gradient statistics callback (disabled by default)
+    if config.get("track_gradients", False):
+        gradient_stats_callback = GradientStatisticsCallback(
+            save_dir=run_dir,
+            log_every_n_steps=config.get("grad_log_every_n_steps", 100),
+            track_per_weight_matrix=config.get("grad_track_per_weight_matrix", True),
+        )
+        callbacks.append(gradient_stats_callback)
+        print("Gradient tracking enabled")
     
     # Task-specific callbacks
     if task == "path_integration":
         position_decoding_callback = PositionDecodingCallback(
-            measurement=PositionDecodingMeasurement(config["decode_k"]),
+            measurement=PositionDecodingMeasurement(),
             datamodule=datamodule,
             log_every_n_epochs=config["log_every_n_epochs"],
             save_dir=run_dir,
@@ -285,7 +274,6 @@ def single_seed(config: dict) -> dict:
         trajectory_viz_callback = TrajectoryVisualizationCallback(
             place_cell_centers=datamodule.place_cell_centers,
             arena_size=config["arena_size"],
-            decode_k=config["decode_k"],
             log_every_n_epochs=config["viz_log_every_n_epochs"],
             num_trajectories_to_plot=3,
         )
@@ -311,6 +299,8 @@ def single_seed(config: dict) -> dict:
         timescale_viz_callback = TimescaleVisualizationCallback(
             save_dir=run_dir,
             log_every_n_epochs=config.get("viz_log_every_n_epochs", 10),
+            behavioral_timescale_mean=config.get("behavioral_timescale_mean"),
+            behavioral_timescale_std=config.get("behavioral_timescale_std"),
         )
         callbacks.append(timescale_viz_callback)
 
@@ -326,10 +316,15 @@ def single_seed(config: dict) -> dict:
             devices = [int(gpu_id.strip()) for gpu_id in gpu_ids]
             accelerator = "gpu"
 
-    # Use DDP with find_unused_parameters for tasks that don't use all model params
-    # (e.g., binary_counter doesn't use W_h_init when init_context=None)
+    # Determine strategy based on number of devices
+    # Single GPU: use "auto" (no DDP overhead)
+    # Multiple GPUs: use DDP
     strategy = config.get("strategy", "auto")
-    if strategy == "auto" and task != "path_integration":
+    if isinstance(devices, list) and len(devices) == 1:
+        # Single GPU mode - no need for DDP
+        strategy = "auto"
+    elif strategy == "auto" and task != "path_integration":
+        # Multi-GPU with find_unused_parameters for tasks that don't use all params
         strategy = "ddp_find_unused_parameters_true"
     
     trainer = Trainer(
@@ -378,6 +373,9 @@ def single_seed(config: dict) -> dict:
         print(f"All artifacts saved to: {run_dir}")
 
     save_additional_artifacts()
+
+    # Properly close the WandB run (important for sweeps with multiple experiments)
+    wandb.finish()
 
     return {"final_val_loss": final_val_loss}
 

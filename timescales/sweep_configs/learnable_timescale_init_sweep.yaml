@@ -14,10 +14,11 @@
 # - Same behavioral timescale (τ_behavior = 1.0s) for all
 # - Compare final timescale distributions across initializations
 #
-# Total experiments: 7 init values × 1 seeds = 7 experiments
+# Total experiments: 8 init values × 2 activation = 16 experiments
 
 base_config: "base_configs/mts.yaml"
 n_seeds: 1
+gpus: [0, 1, 2, 3]  # GPUs to use for parallel job scheduling
 
 # Fixed parameters for this sweep
 fixed_overrides:
@@ -36,7 +37,7 @@ fixed_overrides:
   
   # Training - enough epochs to see convergence
   max_epochs: 200
-  hidden_size: 512
+  hidden_size: 256
   
   # Arena/place cell setup
   arena_size: 1.1
@@ -49,6 +50,7 @@ grid:
   # Initial timescale values (uniform initialization)
   # Range spans from very fast to very slow timescales
   init_timescale:
+    - 0.05
     - 0.1    # Very fast (α ≈ 0.63)
     - 0.2
     - 0.3
@@ -56,8 +58,11 @@ grid:
     - 0.7
     - 1.0    # Matches behavioral mean
     - 1.5
+  activation:
+    - "Tanh"
+    - "ReLU"
 
 # Custom naming for experiments
 naming:
-  format: "init_tau_{init_timescale}"
+  format: "init_tau_{init_timescale}_{activation}"
 

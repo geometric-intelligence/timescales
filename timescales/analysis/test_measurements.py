@@ -9,7 +9,6 @@ from unittest.mock import Mock
 from torch.utils.data import DataLoader, TensorDataset
 
 from timescales.analysis.measurements import Measurement, PositionDecodingMeasurement
-from timescales.rnns.rnn import RNN
 from timescales.rnns.multitimescale_rnn import MultiTimescaleRNN
 
 
@@ -19,7 +18,7 @@ class TestMeasurementBase:
     def test_measurement_is_abstract(self):
         """Test that Measurement cannot be instantiated directly."""
         with pytest.raises(TypeError):
-            Measurement(config={})
+            Measurement()
 
     def test_measurement_requires_compute_implementation(self):
         """Test that subclasses must implement compute method."""
@@ -28,21 +27,16 @@ class TestMeasurementBase:
             pass
 
         with pytest.raises(TypeError):
-            IncompleteMeasurement(config={})
+            IncompleteMeasurement()
 
 
 class TestPositionDecodingMeasurement:
     """Test the PositionDecodingMeasurement class."""
 
     @pytest.fixture
-    def config(self):
-        """Basic config for position decoding measurement."""
-        return {"decode_k": 3}
-
-    @pytest.fixture
-    def measurement(self, config):
+    def measurement(self):
         """Create a PositionDecodingMeasurement instance."""
-        return PositionDecodingMeasurement(config)
+        return PositionDecodingMeasurement()
 
     @pytest.fixture
     def place_cell_centers(self):
@@ -75,59 +69,24 @@ class TestPositionDecodingMeasurement:
 
         return mock_dm
 
-    @pytest.fixture
-    def mock_rnn_model(self):
-        """Create a mock RNN model."""
-        mock_model = Mock(spec=RNN)
-        mock_model.eval.return_value = None
-
-        # Mock the forward pass to return realistic outputs
-        def mock_forward(inputs, place_cells_0):
-            batch_size, seq_len, _ = inputs.shape
-            num_place_cells = place_cells_0.shape[-1]
-            hidden = torch.randn(batch_size, seq_len, 64)  # Mock hidden states
-            outputs = torch.randn(
-                batch_size, seq_len, num_place_cells
-            )  # Mock place cell outputs
-            return hidden, outputs
-
-        mock_model.side_effect = mock_forward
-
-        mock_param = torch.tensor([1.0])
-        mock_model.parameters.return_value = iter([mock_param])
-
-        return mock_model
-
-    def test_initialization(self, config):
+    def test_initialization(self):
         """Test that PositionDecodingMeasurement initializes correctly."""
-        measurement = PositionDecodingMeasurement(config)
-        assert measurement.config == config
-        assert measurement.decode_k == 3
+        measurement = PositionDecodingMeasurement()
+        assert measurement is not None
 
-    def test_initialization_missing_decode_k(self):
-        """Test that initialization fails without decode_k in config."""
-        with pytest.raises(KeyError):
-            PositionDecodingMeasurement({})
-
-    def test_decode_position_from_place_cells(self, measurement, place_cell_centers):
-        """Test the position decoding method."""
+    def test_decode_position_weighted_sum(self, measurement, place_cell_centers):
+        """Test the position decoding method using weighted sum."""
         batch_size, seq_len, num_place_cells = 2, 5, 5
 
-        # Create activations that work with decode_k=3
-        # Make sure the top 3 activations average to the expected position
+        # Create activations that are already softmaxed
+        # If we put all weight on one place cell, we should get that cell's center
         activations = torch.zeros(batch_size, seq_len, num_place_cells)
-
-        # For first batch: strongly activate place cells 0, 1, 2 (all near [0,0])
-        activations[0, :, 0] = 10.0  # [0.0, 0.0]
-        activations[0, :, 1] = 9.0  # [1.0, 0.0]
-        activations[0, :, 2] = 8.0  # [0.0, 1.0]
-        # Average of top 3: ([0,0] + [1,0] + [0,1])/3 = [0.33, 0.33]
-
-        # For second batch: strongly activate place cell 4 and make others much smaller
-        activations[1, :, 4] = 100.0  # [0.5, 0.5] - Much stronger
-        activations[1, :, 3] = 1.0  # [1.0, 1.0] (much smaller)
-        activations[1, :, 2] = 0.5  # [0.0, 1.0] (much smaller)
-        # With 100.0 vs 1.0 vs 0.5, the average will be heavily dominated by place cell 4
+        
+        # First batch: all weight on place cell 0 at [0.0, 0.0]
+        activations[0, :, 0] = 1.0
+        
+        # Second batch: all weight on place cell 4 at [0.5, 0.5]
+        activations[1, :, 4] = 1.0
 
         decoded_positions = measurement.decode_position_from_place_cells(
             activations, place_cell_centers
@@ -135,36 +94,47 @@ class TestPositionDecodingMeasurement:
 
         assert decoded_positions.shape == (batch_size, seq_len, 2)
 
-        # More reasonable expectations for decode_k=3
-        # First batch should be around the average of the top 3 place cells
-        expected_pos_0 = (
-            place_cell_centers[0] + place_cell_centers[1] + place_cell_centers[2]
-        ) / 3
-
-        # Second batch: calculate actual expected position with the activations we set
-        # Top 3 are: place_cell_4 (100.0), place_cell_3 (1.0), place_cell_2 (0.5)
-        expected_pos_1 = (
-            place_cell_centers[4] + place_cell_centers[3] + place_cell_centers[2]
-        ) / 3
-
-        # Use looser tolerances since we're averaging multiple cells
+        # First batch should be at [0.0, 0.0]
         torch.testing.assert_close(
-            decoded_positions[0].mean(0),  # Average over time
-            expected_pos_0,
-            atol=0.2,
-            rtol=0.2,
+            decoded_positions[0, 0],
+            place_cell_centers[0],
+            atol=1e-6,
+            rtol=1e-6,
         )
+        
+        # Second batch should be at [0.5, 0.5]
         torch.testing.assert_close(
-            decoded_positions[1].mean(0),  # Average over time
-            expected_pos_1,  # Use the correct expected position
-            atol=0.2,
-            rtol=0.2,
+            decoded_positions[1, 0],
+            place_cell_centers[4],
+            atol=1e-6,
+            rtol=1e-6,
+        )
+
+    def test_decode_position_uniform_weights(self, measurement, place_cell_centers):
+        """Test decoding with uniform weights gives center of all cells."""
+        batch_size, seq_len, num_place_cells = 1, 1, 5
+        
+        # Uniform weights (sum to 1)
+        activations = torch.ones(batch_size, seq_len, num_place_cells) / num_place_cells
+        
+        decoded_positions = measurement.decode_position_from_place_cells(
+            activations, place_cell_centers
+        )
+        
+        # Should be the mean of all place cell centers
+        expected_center = place_cell_centers.mean(dim=0)
+        torch.testing.assert_close(
+            decoded_positions[0, 0],
+            expected_center,
+            atol=1e-6,
+            rtol=1e-6,
         )
 
     def test_decode_position_device_handling(self, measurement):
         """Test that position decoding handles device placement correctly."""
         # Create tensors on CPU
         activations = torch.randn(1, 1, 5)
+        activations = torch.softmax(activations, dim=-1)  # Normalize
         place_cell_centers = torch.randn(5, 2)
 
         # Test CPU computation
@@ -181,29 +151,15 @@ class TestPositionDecodingMeasurement:
             )
             assert result_gpu.device.type == "cuda"
 
-    def test_compute_with_rnn_model(self, measurement, mock_rnn_model, mock_datamodule):
-        """Test compute method with an RNN model."""
-        error = measurement.compute(mock_rnn_model, mock_datamodule)
-
-        # Should return a float
-        assert isinstance(error, float)
-        assert error >= 0.0  # Position error should be non-negative
-
-        # Verify that model.eval() was called
-        mock_rnn_model.eval.assert_called_once()
-
-        # Verify that datamodule.val_dataloader() was called
-        mock_datamodule.val_dataloader.assert_called_once()
-
     def test_compute_with_multitimescale_model(self, measurement, mock_datamodule):
         """Test compute method with a MultiTimescaleRNN model."""
         mock_model = Mock(spec=MultiTimescaleRNN)
         mock_model.eval.return_value = None
 
         # Mock the forward pass
-        def mock_forward(inputs, place_cells_0):
+        def mock_forward(inputs, init_context):
             batch_size, seq_len, _ = inputs.shape
-            num_place_cells = place_cells_0.shape[-1]
+            num_place_cells = init_context.shape[-1]
             hidden = torch.randn(batch_size, seq_len, 64)
             outputs = torch.randn(batch_size, seq_len, num_place_cells)
             return hidden, outputs
@@ -220,56 +176,13 @@ class TestPositionDecodingMeasurement:
         assert error >= 0.0
         mock_model.eval.assert_called_once()
 
-    def test_compute_with_unknown_model_type(self, measurement, mock_datamodule):
-        """Test that compute fails with unknown model types."""
-        mock_model = Mock()  # Not an RNN or MultiTimescaleRNN
-        # return iterator, not list
-        mock_param = torch.tensor([1.0])
-        mock_model.parameters.return_value = iter([mock_param])
-        mock_model.eval.return_value = None
-
-        with pytest.raises(AssertionError, match="Unknown model type"):
-            measurement.compute(mock_model, mock_datamodule)
-
-    def test_decode_k_from_config(self):
-        """Test that decode_k is correctly read from config."""
-        config_k5 = {"decode_k": 5}
-        measurement = PositionDecodingMeasurement(config_k5)
-        assert measurement.decode_k == 5
-
-        config_k1 = {"decode_k": 1}
-        measurement = PositionDecodingMeasurement(config_k1)
-        assert measurement.decode_k == 1
-
-    def test_position_decoding_top_k_logic(self, place_cell_centers):
-        """Test that top-k selection works correctly."""
-        config = {"decode_k": 2}
-        measurement = PositionDecodingMeasurement(config)
-
-        # Create activations where we know which cells should be selected
-        activations = torch.tensor(
-            [[[1.0, 5.0, 2.0, 8.0, 3.0]]]
-        )  # Top 2 should be indices 3, 1
-
-        decoded_pos = measurement.decode_position_from_place_cells(
-            activations, place_cell_centers
-        )
-
-        # Expected position should be average of place cells 3 and 1
-        expected_pos = (place_cell_centers[3] + place_cell_centers[1]) / 2
-
-        torch.testing.assert_close(
-            decoded_pos[0, 0], expected_pos, atol=1e-6, rtol=1e-6
-        )
-
 
 class TestIntegration:
     """Integration tests that test the interaction between components."""
 
     def test_measurement_with_real_tensors(self):
         """Test with more realistic tensor shapes and values."""
-        config = {"decode_k": 3}
-        measurement = PositionDecodingMeasurement(config)
+        measurement = PositionDecodingMeasurement()
 
         # Create realistic place cell centers (grid layout)
         x = torch.linspace(0, 1, 5)
@@ -293,9 +206,7 @@ class TestIntegration:
                 pos = target_positions[b, t]
                 distances = torch.norm(place_cell_centers - pos, dim=1)
                 # Activate cells based on inverse distance (with some noise)
-                activations = (
-                    torch.exp(-distances * 5) + torch.randn(num_place_cells) * 0.1
-                )
+                activations = torch.exp(-distances * 5)
                 target_place_cells[b, t] = torch.softmax(activations, dim=0)
 
         # Test the decoding

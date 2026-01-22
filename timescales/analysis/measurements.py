@@ -9,7 +9,6 @@ import torch
 from abc import ABC, abstractmethod
 import lightning as L
 
-from timescales.rnns.rnn import RNN
 from timescales.rnns.multitimescale_rnn import MultiTimescaleRNN
 
 
@@ -53,24 +52,15 @@ class Measurement(ABC):
 
 class PositionDecodingMeasurement(Measurement):
     """
-    Measures position decoding error using top-k place cell activations.
+    Measures position decoding error using weighted sum of place cell activations.
 
     This measurement computes how well positions can be decoded from the model's
-    place cell outputs using a top-k averaging method.
+    place cell outputs using activations as weights for place cell centers.
     """
 
-    def __init__(
-        self,
-        decode_k: int = 3,
-    ) -> None:
-        """
-        Initialize the position decoding measurement.
-
-        Args:
-            decode_k: Number of top place cells to use for position decoding
-        """
+    def __init__(self) -> None:
+        """Initialize the position decoding measurement."""
         super().__init__()
-        self.decode_k = decode_k
 
     def decode_position_from_place_cells(
         self,
@@ -78,19 +68,23 @@ class PositionDecodingMeasurement(Measurement):
         place_cell_centers: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Decode position from place cell activations using top-k method.
-        (Standard; see https://github.com/ganguli-lab/grid-pattern-formation/blob/401dd6b5e20a754267b16eeb5bd88239b9af33e9/place_cells.py#L66)
+        Decode position from place cell activations using weighted sum.
+        
+        Uses softmax activations as weights to compute weighted average of
+        place cell center positions.
 
         Args:
             activation: Place cell activations [batch, time, num_place_cells]
+                       (should be softmaxed, i.e., sum to 1 along last dim)
             place_cell_centers: Place cell center positions [num_place_cells, 2]
 
         Returns:
             Decoded positions [batch, time, 2]
         """
         centers = place_cell_centers.to(activation.device)
-        _, idxs = torch.topk(activation, k=self.decode_k, dim=-1)  # [B, T, k]
-        pred_pos = centers[idxs].mean(-2)  # [B, T, 2]
+        # Weighted sum: activation @ centers
+        # activation: [B, T, N], centers: [N, 2] -> [B, T, 2]
+        pred_pos = torch.einsum('btn,nd->btd', activation, centers)
         return pred_pos
 
     def compute(
@@ -129,7 +123,7 @@ class PositionDecodingMeasurement(Measurement):
 
                 _, outputs = model(
                     inputs=inputs,
-                    place_cells_0=target_place_cells[:, 0, :],
+                    init_context=target_place_cells[:, 0, :],
                 )
 
                 place_cell_probs = torch.softmax(outputs, dim=-1)
