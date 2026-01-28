@@ -72,6 +72,10 @@ step_size: 100
 gamma: 0.5
 max_epochs: 200
 
+# Gradient preconditioning (scales gradients by 1/(alpha + eps) per neuron)
+precondition_gradients: true  # Enable alpha-based gradient preconditioning
+eps_alpha: 0.01                # Damping constant for preconditioner stability
+
 # === Callback configs ===
 # decode_k: 3
 log_every_n_epochs: 1

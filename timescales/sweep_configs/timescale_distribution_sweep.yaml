@@ -26,6 +26,10 @@ fixed_overrides:
   num_trajectories: 100000
   hidden_size: 256
 
+  # Gradient preconditioning (scales gradients by 1/(alpha + eps) per neuron)
+  precondition_gradients: true  # Enable alpha-based gradient preconditioning
+  eps_alpha: 0.01                # Damping constant for preconditioner stability
+
 experiments:
   # ============ ReLU Experiments ============
   - name: "ReLU_discrete_1"

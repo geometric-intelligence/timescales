@@ -122,6 +122,8 @@ def create_multitimescale_rnn_model(
         step_size=config["step_size"],
         gamma=config["gamma"],
         task=config.get("task", "path_integration"),
+        precondition_gradients=config.get("precondition_gradients", False),
+        eps_alpha=config.get("eps_alpha", 1e-2),
     )
 
     return model, lightning_module

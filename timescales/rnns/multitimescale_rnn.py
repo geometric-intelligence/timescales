@@ -390,6 +390,8 @@ class MultiTimescaleRNNLightning(L.LightningModule):
         step_size: int,
         gamma: float,
         task: str = "path_integration",
+        precondition_gradients: bool = False,
+        eps_alpha: float = 1e-2,
     ) -> None:
         """
         Initialize the Multi-timescale RNN Lightning module.
@@ -400,6 +402,8 @@ class MultiTimescaleRNNLightning(L.LightningModule):
         :param step_size: The step size for the learning rate scheduler.
         :param gamma: The gamma for the learning rate scheduler.
         :param task: The task type ("path_integration" or "binary_counter").
+        :param precondition_gradients: If True, apply alpha-based gradient preconditioning.
+        :param eps_alpha: Damping constant for numerical stability in preconditioner (1/(alpha + eps)).
         """
         super().__init__()
         self.model = model
@@ -408,10 +412,17 @@ class MultiTimescaleRNNLightning(L.LightningModule):
         self.step_size = step_size
         self.gamma = gamma
         self.task = task
+        self.precondition_gradients = precondition_gradients
+        self.eps_alpha = eps_alpha
         
         # Task-specific loss function
         if task == "binary_counter":
             self.loss_fn = nn.BCEWithLogitsLoss(reduction='none')  # Use 'none' to compute per-sample losses
+
+        if precondition_gradients:
+            print(f"Gradient preconditioning ENABLED (eps_alpha={eps_alpha})")
+        else:
+            print(f"Gradient preconditioning DISABLED")
 
     def _compute_loss(self, outputs: torch.Tensor, targets: torch.Tensor) -> tuple[torch.Tensor, dict[str, torch.Tensor] | None]:
         """
@@ -555,7 +566,45 @@ class MultiTimescaleRNNLightning(L.LightningModule):
             },
         }
 
+    def on_before_optimizer_step(self, optimizer):
+        """Apply alpha-based gradient preconditioning before optimizer step.
+        
+        Scales gradients by P = diag(1/(alpha_i + eps)) to compensate for
+        different update rates across neurons with different timescales.
+        """
+        if not self.precondition_gradients:
+            return
+
+        
+        # Get alphas (detach to avoid gradient flow through preconditioner)
+        alphas = self.model.rnn_step.current_alphas.detach()
+        
+        # Compute preconditioner: p_i = 1 / (alpha_i + eps)
+        preconditioner = 1.0 / (alphas + self.eps_alpha)  # shape: (hidden_size,)
+        
+        # Apply to W_in gradient (shape: hidden_size × input_size)
+        if self.model.rnn_step.W_in.weight.grad is not None:
+            self.model.rnn_step.W_in.weight.grad *= preconditioner.unsqueeze(1)
+        
+        # Apply to W_in bias gradient (shape: hidden_size)
+        if self.model.rnn_step.W_in.bias.grad is not None:
+            self.model.rnn_step.W_in.bias.grad *= preconditioner
+        
+        # Apply to W_rec gradient (shape: hidden_size × hidden_size)
+        if self.model.rnn_step.W_rec.weight.grad is not None:
+            self.model.rnn_step.W_rec.weight.grad *= preconditioner.unsqueeze(1)
+        
+        # Apply to W_rec bias gradient (shape: hidden_size)
+        if self.model.rnn_step.W_rec.bias.grad is not None:
+            self.model.rnn_step.W_rec.bias.grad *= preconditioner
+        
+        # Apply to W_h_init gradient (shape: hidden_size × output_size)
+        if self.model.W_h_init.weight.grad is not None:
+            self.model.W_h_init.weight.grad *= preconditioner.unsqueeze(1)
+
     def on_train_start(self):
         """Log timescale statistics at the start of training."""
         timescale_stats = self.model.get_timescale_stats()
         print(f"Timescale statistics: {timescale_stats}")
+        if self.precondition_gradients:
+            print(f"Gradient preconditioning ENABLED (eps_alpha={self.eps_alpha})")

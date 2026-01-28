@@ -46,6 +46,10 @@ fixed_overrides:
   # Visualization - track timescale evolution
   viz_log_every_n_epochs: 10
 
+  # Gradient preconditioning (scales gradients by 1/(alpha + eps) per neuron)
+  precondition_gradients: true  # Enable alpha-based gradient preconditioning
+  eps_alpha: 0.01                # Damping constant for preconditioner stability
+
 grid:
   # Initial timescale values (uniform initialization)
   # Range spans from very fast to very slow timescales
