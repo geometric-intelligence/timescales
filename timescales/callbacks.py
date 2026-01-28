@@ -6,7 +6,6 @@ import torch
 import matplotlib.pyplot as plt
 import wandb
 import numpy as np
-from timescales.rnns.rnn import RNN
 from timescales.rnns.multitimescale_rnn import MultiTimescaleRNN
 from timescales.analysis.measurements import PositionDecodingMeasurement
 
@@ -123,24 +122,22 @@ class TrajectoryVisualizationCallback(L.Callback):
         self,
         place_cell_centers: torch.Tensor,
         arena_size: float,
-        decode_k: int = 3,
         log_every_n_epochs: int = 5,
         num_trajectories_to_plot: int = 3,
     ):
         super().__init__()
         self.place_cell_centers = place_cell_centers
         self.arena_size = arena_size
-        self.decode_k = decode_k
         self.log_every_n_epochs = log_every_n_epochs
         self.num_trajectories_to_plot = num_trajectories_to_plot
 
     def decode_position_from_place_cells(
         self, activation: torch.Tensor
     ) -> torch.Tensor:
-        """Decode position from place cell activations using top-k method."""
+        """Decode position from place cell activations using weighted sum."""
         centers = self.place_cell_centers.to(activation.device)
-        _, idxs = torch.topk(activation, k=self.decode_k, dim=-1)  # [B, T, k]
-        pred_pos = centers[idxs].mean(-2)  # [B, T, 2]
+        # Weighted sum: activation @ centers
+        pred_pos = torch.einsum('btn,nd->btd', activation, centers)
         return pred_pos
 
     @rank_zero_only
@@ -167,14 +164,9 @@ class TrajectoryVisualizationCallback(L.Callback):
 
         # Get model predictions
         with torch.no_grad():
-            if isinstance(pl_module.model, RNN):
-                _, outputs = pl_module.model(
-                    inputs=inputs, place_cells_0=target_place_cells[:, 0, :]
-                )
-            elif isinstance(pl_module.model, MultiTimescaleRNN):
-                _, outputs = pl_module.model(
-                    inputs=inputs, place_cells_0=target_place_cells[:, 0, :]
-                )
+            _, outputs = pl_module.model(
+                inputs=inputs, init_context=target_place_cells[:, 0, :]
+            )
 
             # Convert to probabilities and decode positions
             place_cell_probs = torch.softmax(outputs, dim=-1)
@@ -494,6 +486,7 @@ class TimescaleVisualizationCallback(L.Callback):
     
     For fixed timescales: logs once at the start of training.
     For learnable timescales: logs periodically and saves timescale history to file.
+    At end of training: creates comparison plot of initial vs final distributions.
     """
 
     def __init__(
@@ -501,17 +494,26 @@ class TimescaleVisualizationCallback(L.Callback):
         save_dir: str = None,
         log_every_n_epochs: int = 10,
         log_at_epoch: int = 0,  # Kept for backward compatibility
+        behavioral_timescale_mean: float = None,
+        behavioral_timescale_std: float = None,
     ):
         """
         :param save_dir: Directory to save timescale history (required for learnable timescales)
         :param log_every_n_epochs: How often to log visualizations for learnable timescales
         :param log_at_epoch: Epoch at which to log for fixed timescales (backward compat)
+        :param behavioral_timescale_mean: Mean behavioral timescale for reference line
+        :param behavioral_timescale_std: Std of behavioral timescale for reference band
         """
         super().__init__()
         self.save_dir = save_dir
         self.log_every_n_epochs = log_every_n_epochs
         self.log_at_epoch = log_at_epoch
         self.logged_fixed = False  # For fixed timescales (log once)
+        self.behavioral_timescale_mean = behavioral_timescale_mean
+        self.behavioral_timescale_std = behavioral_timescale_std
+        
+        # Store initial timescales for comparison
+        self.initial_timescales = None
         
         # History tracking for learnable timescales
         self.timescale_history = {
@@ -559,6 +561,10 @@ class TimescaleVisualizationCallback(L.Callback):
 
         # Always record statistics for learnable timescales
         if is_learnable:
+            # Store initial timescales for comparison plot
+            if epoch == 0 and self.initial_timescales is None:
+                self.initial_timescales = timescales.copy()
+            
             self.timescale_history["epochs"].append(epoch)
             self.timescale_history["mean"].append(float(timescales.mean()))
             self.timescale_history["std"].append(float(timescales.std()))
@@ -826,7 +832,7 @@ class TimescaleVisualizationCallback(L.Callback):
 
     @rank_zero_only
     def on_train_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
-        """Save final timescales at the end of training."""
+        """Save final timescales and create comparison plot at the end of training."""
         if not isinstance(pl_module.model, MultiTimescaleRNN):
             return
         
@@ -835,12 +841,12 @@ class TimescaleVisualizationCallback(L.Callback):
             return
         
         # Save final timescales
-        timescales = model.rnn_step.current_timescales.detach().cpu().numpy()
+        final_timescales = model.rnn_step.current_timescales.detach().cpu().numpy()
         final_epoch = trainer.current_epoch
         
         # Add final epoch to full timescales if not already there
         if str(final_epoch) not in self.timescale_history["full_timescales"]:
-            self.timescale_history["full_timescales"][str(final_epoch)] = timescales.tolist()
+            self.timescale_history["full_timescales"][str(final_epoch)] = final_timescales.tolist()
         
         # Save final history
         if self.save_dir is not None:
@@ -848,6 +854,87 @@ class TimescaleVisualizationCallback(L.Callback):
             with open(history_path, "w") as f:
                 json.dump(self.timescale_history, f, indent=2)
             print(f"Timescale history saved to: {history_path}")
+        
+        # Create comparison plot: initial vs final timescales
+        self._create_comparison_plot(final_timescales, final_epoch)
+    
+    @rank_zero_only
+    def _create_comparison_plot(self, final_timescales: np.ndarray, final_epoch: int) -> None:
+        """Create plot comparing initial vs final timescale distributions."""
+        if self.initial_timescales is None:
+            print("Warning: No initial timescales recorded, skipping comparison plot")
+            return
+        
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        # Determine bin edges based on combined range
+        all_timescales = np.concatenate([self.initial_timescales, final_timescales])
+        min_tau = max(0.01, all_timescales.min() * 0.8)
+        max_tau = all_timescales.max() * 1.2
+        
+        # Use log-spaced bins for timescales
+        bins = np.logspace(np.log10(min_tau), np.log10(max_tau), 30)
+        
+        # Plot initial distribution
+        ax.hist(
+            self.initial_timescales, 
+            bins=bins, 
+            alpha=0.5, 
+            label=f"Initial (epoch 0)\nμ={self.initial_timescales.mean():.3f}s, σ={self.initial_timescales.std():.3f}s",
+            color="blue",
+            edgecolor="darkblue",
+        )
+        
+        # Plot final distribution
+        ax.hist(
+            final_timescales, 
+            bins=bins, 
+            alpha=0.5, 
+            label=f"Final (epoch {final_epoch})\nμ={final_timescales.mean():.3f}s, σ={final_timescales.std():.3f}s",
+            color="green",
+            edgecolor="darkgreen",
+        )
+        
+        # Add behavioral timescale reference
+        if self.behavioral_timescale_mean is not None:
+            ax.axvline(
+                self.behavioral_timescale_mean, 
+                color="red", 
+                linestyle="--", 
+                linewidth=2,
+                label=f"Behavioral τ = {self.behavioral_timescale_mean:.2f}s"
+            )
+            
+            # Add shaded region for ± std if available
+            if self.behavioral_timescale_std is not None:
+                ax.axvspan(
+                    self.behavioral_timescale_mean - self.behavioral_timescale_std,
+                    self.behavioral_timescale_mean + self.behavioral_timescale_std,
+                    alpha=0.2,
+                    color="red",
+                    label=f"± {self.behavioral_timescale_std:.2f}s"
+                )
+        
+        ax.set_xscale("log")
+        ax.set_xlabel("Timescale τ (seconds)", fontsize=12)
+        ax.set_ylabel("Count", fontsize=12)
+        ax.set_title("Learned Timescale Distribution: Initial vs Final", fontsize=14)
+        ax.legend(loc="upper right", fontsize=10)
+        ax.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        
+        # Save plot
+        if self.save_dir is not None:
+            plot_path = os.path.join(self.save_dir, "timescale_comparison.png")
+            plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+            print(f"Timescale comparison plot saved to: {plot_path}")
+        
+        # Log to wandb
+        if wandb.run is not None:
+            wandb.log({"timescale_comparison": wandb.Image(fig)})
+        
+        plt.close(fig)
 
     def _plot_theoretical_distribution(
         self, ax, config: dict, actual_timescales: np.ndarray

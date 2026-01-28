@@ -222,7 +222,6 @@ class DynamicsAnalyzer:
         trained_model,
         untrained_model,
         device: str,
-        model_type: str = "vanilla",
         population_to_visualize: str = "pop1",
     ):
         """
@@ -230,21 +229,18 @@ class DynamicsAnalyzer:
 
         Parameters:
         -----------
-        trained_model : RNN or MultiTimescaleRNN
+        trained_model : MultiTimescaleRNN
             Trained model to analyze
-        untrained_model : RNN or MultiTimescaleRNN
+        untrained_model : MultiTimescaleRNN
             Untrained model for comparison
         device : str
             Device to run models on
-        model_type : str
-            "vanilla" or "multitimescale"
         population_to_visualize : str
             For multitimescale models: "pop1", "pop2", or "both"
         """
         self.trained_model = trained_model
         self.untrained_model = untrained_model
         self.device = device
-        self.model_type = model_type
         self.population_to_visualize = population_to_visualize
 
         self.trained_hidden_states: Optional[torch.Tensor] = None
@@ -416,9 +412,7 @@ class DynamicsAnalyzer:
         if self.pca_trained is None:
             raise ValueError("Must compute PCA first using compute_pca()")
 
-        population_name = f"{self.model_type.capitalize()}"
-        if self.model_type == "multitimescale":
-            population_name += f" {self.population_to_visualize}"
+        population_name = f"MultiTimescaleRNN {self.population_to_visualize}"
 
         plot_pca_spectrum(
             self.pca_trained,
@@ -543,9 +537,7 @@ class DynamicsAnalyzer:
         plt.colorbar(scatter4, ax=axes[1, 1], shrink=0.8, label="Y position")
 
         # Overall title
-        population_name = f"{self.model_type.capitalize()}"
-        if self.model_type == "multitimescale":
-            population_name += f" {self.population_to_visualize}"
+        population_name = f"MultiTimescaleRNN {self.population_to_visualize}"
 
         fig.suptitle(
             f"Hidden States Colored by Spatial Position (2D PCA) - {population_name}",
@@ -559,14 +551,8 @@ class DynamicsAnalyzer:
 
     def _get_hidden_states(self, model, inputs, place_cells):
         """Get hidden states from a model."""
-        if self.model_type == "vanilla":
-            hidden_states, _ = model(inputs=inputs, place_cells_0=place_cells[:, 0, :])
-            return hidden_states
-        elif self.model_type == "multitimescale":
-            hidden_states, _ = model(inputs=inputs, place_cells_0=place_cells[:, 0, :])
-            return hidden_states
-        else:
-            raise ValueError(f"Unknown model type: {self.model_type}")
+        hidden_states, _ = model(inputs=inputs, init_context=place_cells[:, 0, :])
+        return hidden_states
 
     def plot_spatial_vs_latent_distance(
         self,
@@ -737,9 +723,7 @@ class DynamicsAnalyzer:
             bbox=dict(boxstyle="round", facecolor="lightcoral", alpha=0.7),
         )
 
-        population_name = (
-            f"{self.model_type.capitalize()} {self.population_to_visualize}"
-        )
+        population_name = f"MultiTimescaleRNN {self.population_to_visualize}"
         metric_name = distance_metric.capitalize()
         plt.suptitle(
             f"Spatial vs Latent Distance Analysis ({metric_name}) - {population_name}",

@@ -10,11 +10,13 @@ seed: 0 # Global seed
 input_size: 2 # 3 for sincos HD encoding
 hidden_size: 512 #4096
 activation: "ReLU" #"Tanh"
+normalize_hidden: false  # If true, apply LayerNorm to hidden state after each step
+zero_diag_wrec: true    # If true, enforce diag(W_rec) = 0 (no self-connections)
 
 # Timescales configuration
 # Option 1: Fixed timescales (default) - set learn_timescales: false
 # Option 2: Learnable timescales - set learn_timescales: true (timescales_config is ignored)
-learn_timescales: true # If true, timescales become trainable parameters
+learn_timescales: false # If true, timescales become trainable parameters
 
 # Initialization for learnable timescales:
 # - If init_timescale is not set: random initialization ~LogNormal
@@ -23,7 +25,7 @@ init_timescale: 1.0  # Set to null for random init, or a value like 0.5 for unif
 
 timescales_config:
   type: "discrete"
-  values: [0.1443] # alpha 0.5
+  values: [0.1443] # uniform alpha 0.5
   #values: [0.001, 0.1, 0.2, 0.448, 0.7, 0.9] # corresponds to [1, 0.2] alpha
 
 
@@ -31,7 +33,7 @@ timescales_config:
 trajectory_type: 'ornstein_uhlenbeck'
 velocity_representation: 'polar'
 dt: 0.1 # s, (reasonable neural dynamics timescale)
-num_time_steps: 20
+num_time_steps: 50
 arena_size: 1.1
 
 # Speed parameterization: Choose ONE of two options:
@@ -70,8 +72,12 @@ step_size: 100
 gamma: 0.5
 max_epochs: 200
 
+# Gradient preconditioning (scales gradients by 1/(alpha + eps) per neuron)
+precondition_gradients: true  # Enable alpha-based gradient preconditioning
+eps_alpha: 0.01                # Damping constant for preconditioner stability
+
 # === Callback configs ===
-decode_k: 3
+# decode_k: 3
 log_every_n_epochs: 1
 viz_log_every_n_epochs: 10
 

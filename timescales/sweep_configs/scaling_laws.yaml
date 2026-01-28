@@ -1,0 +1,39 @@
+# Scaling Laws Sweep
+# 
+# Study how performance scales with number of recurrent neurons
+# Fixed: Learnable timescales, ReLU, no LayerNorm, zero_diag_wrec=true
+
+base_config: "base_configs/mts.yaml"
+n_seeds: 1
+
+fixed_overrides:
+  # Behavioral settings
+  behavioral_timescale_mean: 1.0
+  behavioral_timescale_std: 0.2
+  
+  # Training
+  max_epochs: 200
+  num_trajectories: 100000
+  
+  # Architecture (fixed)
+  activation: "ReLU"
+  normalize_hidden: false
+  zero_diag_wrec: true
+  learn_timescales: true
+  init_timescale: 0.5
+  
+  # Keep place cells fixed
+  num_place_cells: 256
+
+# Sweep over hidden sizes (powers of 2)
+grid:
+  hidden_size:
+    - 16
+    - 32
+    - 64
+    - 128
+    - 256
+    - 512
+    - 1024
+    - 2048
+

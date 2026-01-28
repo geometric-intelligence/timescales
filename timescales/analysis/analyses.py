@@ -13,7 +13,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 import lightning as L
 
-from datamodule import PathIntegrationDataModule
+from timescales.datamodules import PathIntegrationDataModule
 from .measurements import Measurement
 
 

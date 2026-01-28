@@ -8,10 +8,96 @@ grid cells, and other spatially-tuned units.
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
+from scipy import ndimage
 from typing import Tuple, Optional, List
-from timescales.rnns.rnn import RNN
 from timescales.rnns.multitimescale_rnn import MultiTimescaleRNN
 from timescales.scores import GridScorer
+
+
+def compute_spatial_frequency_from_sac(
+    sac: np.ndarray,
+    bin_size: float,
+    n_peaks: int = 6,
+    min_distance_from_center: float = 0.2,
+) -> Tuple[float, float, np.ndarray]:
+    """
+    Compute spatial frequency from peaks in a spatial autocorrelogram.
+    
+    Finds the nearest peaks to the center (excluding the central peak) and
+    computes the mean distance, which gives the grid spacing. Spatial frequency
+    is the inverse of spacing.
+    
+    Parameters:
+    -----------
+    sac : np.ndarray
+        2D spatial autocorrelogram (typically (2*nbins-1) x (2*nbins-1))
+    bin_size : float
+        Size of spatial bins in meters
+    n_peaks : int
+        Number of nearest peaks to use for computing spacing (default: 6 for hexagonal)
+    min_distance_from_center : float
+        Minimum fraction of SAC size to exclude central peak region
+        
+    Returns:
+    --------
+    spatial_frequency : float
+        Spatial frequency in cycles per meter (1/spacing)
+    grid_spacing : float
+        Grid spacing in meters
+    peak_distances : np.ndarray
+        Distances to each detected peak in meters
+    """
+    sac_size = sac.shape[0]
+    center = sac_size // 2
+    
+    # Minimum distance in pixels to exclude central peak
+    min_dist_pixels = int(min_distance_from_center * sac_size)
+    
+    # Find local maxima in the SAC
+    # Use a size that's reasonable for peak detection
+    neighborhood_size = max(3, sac_size // 10)
+    if neighborhood_size % 2 == 0:
+        neighborhood_size += 1
+    
+    # Detect local maxima using maximum filter
+    data_max = ndimage.maximum_filter(sac, size=neighborhood_size)
+    maxima = (sac == data_max) & (sac > 0)  # Only consider positive correlations
+    
+    # Get coordinates of all maxima
+    peak_coords = np.array(np.where(maxima)).T  # Shape: (n_peaks, 2)
+    
+    if len(peak_coords) == 0:
+        return np.nan, np.nan, np.array([])
+    
+    # Compute distance from center for each peak
+    distances_pixels = np.sqrt(
+        (peak_coords[:, 0] - center) ** 2 + (peak_coords[:, 1] - center) ** 2
+    )
+    
+    # Filter out central peak (and very close neighbors)
+    valid_mask = distances_pixels > min_dist_pixels
+    peak_coords = peak_coords[valid_mask]
+    distances_pixels = distances_pixels[valid_mask]
+    
+    if len(distances_pixels) == 0:
+        return np.nan, np.nan, np.array([])
+    
+    # Sort by distance and take the n_peaks nearest
+    sorted_indices = np.argsort(distances_pixels)
+    n_to_use = min(n_peaks, len(sorted_indices))
+    nearest_distances_pixels = distances_pixels[sorted_indices[:n_to_use]]
+    
+    # Convert pixel distances to real-world distances (meters)
+    # Each pixel in the SAC corresponds to bin_size
+    peak_distances_meters = nearest_distances_pixels * bin_size
+    
+    # Grid spacing is the mean distance to the nearest peaks
+    grid_spacing = np.mean(peak_distances_meters)
+    
+    # Spatial frequency = 1 / spacing
+    spatial_frequency = 1.0 / grid_spacing if grid_spacing > 0 else np.nan
+    
+    return spatial_frequency, grid_spacing, peak_distances_meters
 
 
 
@@ -25,25 +111,21 @@ class SpatialAnalyzer:
 
     def __init__(
         self,
-        model: RNN | MultiTimescaleRNN,
+        model: MultiTimescaleRNN,
         device: str,
-        model_type: str = "vanilla",
     ):
         """
         Initialize spatial analyzer.
 
         Parameters:
         -----------
-        model : RNN or MultiTimescaleRNN
+        model : MultiTimescaleRNN
             Trained model to analyze
         device : str
             Device to run model on ("cuda" or "cpu")
-        model_type : str
-            Type of model ("vanilla" or "multitimescale")
         """
         self.model = model
         self.device = device
-        self.model_type = model_type
 
         # Will be populated after computing rate maps
         self.rate_maps = None
@@ -262,7 +344,7 @@ class SpatialAnalyzer:
         elif rows == 1:
             axes = axes.reshape(1, -1)
 
-        title_prefix = f"{self.model_type.capitalize()}"
+        title_prefix = "MultiTimescaleRNN"
 
         for idx, unit_idx in enumerate(units_to_plot):
             row = idx // cols
@@ -472,6 +554,86 @@ class SpatialAnalyzer:
             'sacs': sacs
         }
 
+    def compute_grid_scores_with_frequency(
+        self,
+        mask_parameters=None,
+        min_max=False,
+        n_peaks: int = 6,
+    ) -> dict:
+        """
+        Compute grid scores AND spatial frequencies for all units.
+        
+        This combines grid score computation with spatial frequency estimation
+        from SAC peaks.
+        
+        Parameters:
+        -----------
+        mask_parameters : list of tuples, optional
+            List of (mask_min, mask_max) tuples defining ring masks for scoring.
+        min_max : bool
+            If True, use min/max scoring; otherwise use mean
+        n_peaks : int
+            Number of peaks to use for spatial frequency estimation
+            
+        Returns:
+        --------
+        dict with keys:
+            - 'scores_60': Array of 60-degree grid scores
+            - 'scores_90': Array of 90-degree grid scores  
+            - 'spatial_frequencies': Array of spatial frequencies (cycles/m)
+            - 'grid_spacings': Array of grid spacings (meters)
+            - 'sacs': Spatial autocorrelograms for each unit
+        """
+        # First compute grid scores (this also computes SACs)
+        results = self.compute_grid_scores(
+            mask_parameters=mask_parameters,
+            min_max=min_max
+        )
+        
+        n_units = len(results['sacs'])
+        spatial_frequencies = np.zeros(n_units)
+        grid_spacings = np.zeros(n_units)
+        
+        print(f"Computing spatial frequencies for {n_units} units...")
+        
+        for i in range(n_units):
+            sac = results['sacs'][i]
+            freq, spacing, _ = compute_spatial_frequency_from_sac(
+                sac=sac,
+                bin_size=self.bin_size,
+                n_peaks=n_peaks,
+            )
+            spatial_frequencies[i] = freq
+            grid_spacings[i] = spacing
+            
+            if (i + 1) % 50 == 0:
+                print(f"  Processed {i+1}/{n_units} units...")
+        
+        # Filter out NaN for statistics
+        valid_freqs = spatial_frequencies[~np.isnan(spatial_frequencies)]
+        valid_spacings = grid_spacings[~np.isnan(grid_spacings)]
+        
+        print(f"Spatial frequency computation complete!")
+        if len(valid_freqs) > 0:
+            print(f"  Mean frequency: {np.mean(valid_freqs):.3f} ± {np.std(valid_freqs):.3f} cycles/m")
+            print(f"  Mean spacing: {np.mean(valid_spacings):.3f} ± {np.std(valid_spacings):.3f} m")
+        else:
+            print("  No valid spatial frequencies computed")
+        
+        # Store results
+        self.spatial_frequencies = spatial_frequencies
+        self.grid_spacings = grid_spacings
+        
+        return {
+            'scores_60': results['scores_60'],
+            'scores_90': results['scores_90'],
+            'spatial_frequencies': spatial_frequencies,
+            'grid_spacings': grid_spacings,
+            'sacs': results['sacs'],
+            'mask_params_60': results['mask_params_60'],
+            'mask_params_90': results['mask_params_90'],
+        }
+
     def plot_top_grid_cells(
         self,
         num_cells=9,
@@ -577,23 +739,17 @@ class SpatialAnalyzer:
         place_cells = place_cells.to(self.device)
 
         with torch.no_grad():
-            if self.model_type in ["vanilla", "multitimescale"]:
-                hidden_states, _ = self.model(
-                    inputs=inputs, place_cells_0=place_cells[:, 0, :]
-                )
-                return hidden_states.shape[-1]
-            else:
-                raise ValueError(f"Unknown model type: {self.model_type}")
+            hidden_states, _ = self.model(
+                inputs=inputs, init_context=place_cells[:, 0, :]
+            )
+            return hidden_states.shape[-1]
 
     def _get_hidden_states(self, inputs, place_cells):
         """Get hidden states from the model."""
-        if self.model_type in ["vanilla", "multitimescale"]:
-            hidden_states, _ = self.model(
-                inputs=inputs, place_cells_0=place_cells[:, 0, :]
-            )
-            return hidden_states
-        else:
-            raise ValueError(f"Unknown model type: {self.model_type}")
+        hidden_states, _ = self.model(
+            inputs=inputs, init_context=place_cells[:, 0, :]
+        )
+        return hidden_states
 
     def _select_units(
         self, num_units: int, selection_method: str, random_seed: int

@@ -17,6 +17,9 @@ class MultiTimescaleRNNStep(nn.Module):
         activation: type[nn.Module] = nn.Tanh,
         learn_timescales: bool = False,
         init_timescale: float | None = None,
+        shared_timescale: bool = False,
+        normalize_hidden: bool = False,
+        zero_diag_wrec: bool = True,
     ) -> None:
         """
         Initialize the Multi-timescale RNN step.
@@ -31,6 +34,10 @@ class MultiTimescaleRNNStep(nn.Module):
         :param learn_timescales: If True, timescales become trainable parameters.
         :param init_timescale: If provided and learn_timescales=True, initialize all timescales
                               to this value (uniform initialization). If None, use random init.
+        :param shared_timescale: If True and learn_timescales=True, use a single shared timescale
+                                for all neurons instead of per-neuron timescales.
+        :param normalize_hidden: If True, apply LayerNorm to hidden state after each step.
+        :param zero_diag_wrec: If True, enforce diag(W_rec) = 0 (no self-connections).
         """
         super().__init__()
         self.input_size = input_size
@@ -38,18 +45,35 @@ class MultiTimescaleRNNStep(nn.Module):
         self.dt = dt
         self.activation = activation()
         self.learn_timescales = learn_timescales
+        self.shared_timescale = shared_timescale
+        self.normalize_hidden = normalize_hidden
+        self.zero_diag_wrec = zero_diag_wrec
+
+        # Optional LayerNorm for hidden state normalization
+        if normalize_hidden:
+            self.layer_norm = nn.LayerNorm(hidden_size)
+        else:
+            self.layer_norm = None
 
         if learn_timescales:
             # Learnable timescales via log-parameterization
             # log_timescales is unconstrained; timescales = exp(log_timescales) > 0
             if init_timescale is not None:
-                # Uniform initialization: all timescales start at init_timescale
-                log_timescales = torch.full((hidden_size,), float(torch.log(torch.tensor(init_timescale))))
+                init_log_tau = float(torch.log(torch.tensor(init_timescale)))
             else:
-                # Random initialization
-                # Initialize so that exp(log_timescales) gives τ roughly in [0.1, 1.0]
-                # log(0.3) ≈ -1.2, so init ~ N(−0.5, 0.5) gives reasonable starting τ
-                log_timescales = torch.randn(hidden_size) * 0.5 - 0.5
+                init_log_tau = -0.5  # ~0.6s default
+            
+            if shared_timescale:
+                # Single shared timescale for all neurons (scalar)
+                log_timescales = torch.tensor([init_log_tau])
+            else:
+                # Per-neuron timescales (vector)
+                if init_timescale is not None:
+                    log_timescales = torch.full((hidden_size,), init_log_tau)
+                else:
+                    # Random initialization
+                    log_timescales = torch.randn(hidden_size) * 0.5 - 0.5
+            
             self.log_timescales = nn.Parameter(log_timescales)
             # Register dt as buffer for alpha computation
             self.register_buffer("_dt", torch.tensor(dt))
@@ -63,10 +87,19 @@ class MultiTimescaleRNNStep(nn.Module):
 
         self.W_in = nn.Linear(input_size, hidden_size)
         self.W_rec = nn.Linear(hidden_size, hidden_size)
+        
+        # Enforce zero diagonal on W_rec if requested (init to 0 + freeze via gradient hook)
+        if zero_diag_wrec:
+            self.W_rec.weight.data.fill_diagonal_(0)
+            self.W_rec.weight.register_hook(lambda g: g.clone().fill_diagonal_(0))
 
     @property
     def current_timescales(self) -> torch.Tensor:
-        """Get current timescale values (computed from log_timescales if learnable)."""
+        """Get current timescale values (computed from log_timescales if learnable).
+        
+        For shared_timescale=True, returns a scalar tensor.
+        For shared_timescale=False (default), returns tensor of shape (hidden_size,).
+        """
         if self.learn_timescales:
             return torch.exp(self.log_timescales)
         else:
@@ -74,10 +107,18 @@ class MultiTimescaleRNNStep(nn.Module):
 
     @property
     def current_alphas(self) -> torch.Tensor:
-        """Get current alpha values (computed from log_timescales if learnable)."""
+        """Get current alpha values (computed from log_timescales if learnable).
+        
+        Always returns tensor of shape (hidden_size,) for broadcasting in forward pass.
+        For shared_timescale=True, expands the single alpha to all neurons.
+        """
         if self.learn_timescales:
             timescales = torch.exp(self.log_timescales)
-            return 1 - torch.exp(-self._dt / timescales)
+            alphas = 1 - torch.exp(-self._dt / timescales)
+            # Expand shared timescale to hidden_size for broadcasting
+            if self.shared_timescale:
+                alphas = alphas.expand(self.hidden_size)
+            return alphas
         else:
             return self.alphas
 
@@ -102,6 +143,10 @@ class MultiTimescaleRNNStep(nn.Module):
         # Per-unit leaky integration: h_new = (1-α)*h_old + α*activated
         new_hidden = (1 - alphas) * hidden + alphas * activated
 
+        # Optional LayerNorm
+        if self.layer_norm is not None:
+            new_hidden = self.layer_norm(new_hidden)
+
         return new_hidden
 
 
@@ -120,6 +165,9 @@ class MultiTimescaleRNN(nn.Module):
         activation: type[nn.Module] = nn.Tanh,
         learn_timescales: bool = False,
         init_timescale: float | None = None,
+        shared_timescale: bool = False,
+        normalize_hidden: bool = False,
+        zero_diag_wrec: bool = False,
     ) -> None:
         """
         Initialize the Multi-timescale RNN.
@@ -135,6 +183,10 @@ class MultiTimescaleRNN(nn.Module):
                                  (randomly initialized, timescales_config is ignored).
         :param init_timescale: If provided and learn_timescales=True, initialize all 
                               timescales to this value (uniform). If None, use random init.
+        :param shared_timescale: If True and learn_timescales=True, use a single shared
+                                timescale for all neurons instead of per-neuron timescales.
+        :param normalize_hidden: If True, apply LayerNorm to hidden state after each step.
+        :param zero_diag_wrec: If True, enforce diag(W_rec) = 0 (no self-connections).
         """
         super().__init__()
         self.input_size = input_size
@@ -143,14 +195,19 @@ class MultiTimescaleRNN(nn.Module):
         self.dt = dt
         self.learn_timescales = learn_timescales
         self.init_timescale = init_timescale
+        self.shared_timescale = shared_timescale
+        self.normalize_hidden = normalize_hidden
+        self.zero_diag_wrec = zero_diag_wrec
 
         if learn_timescales:
             # Timescales are learned
             timescales = None
-            if init_timescale is not None:
-                print(f"Timescales are LEARNABLE (uniform init at τ={init_timescale}s)")
+            if shared_timescale:
+                print(f"Timescales are LEARNABLE (SHARED, init at τ={init_timescale}s)")
+            elif init_timescale is not None:
+                print(f"Timescales are LEARNABLE (per-neuron, uniform init at τ={init_timescale}s)")
             else:
-                print(f"Timescales are LEARNABLE (randomly initialized)")
+                print(f"Timescales are LEARNABLE (per-neuron, randomly initialized)")
         else:
             # Generate fixed timescales based on configuration
             if timescales_config is None:
@@ -165,6 +222,9 @@ class MultiTimescaleRNN(nn.Module):
             activation=activation,
             learn_timescales=learn_timescales,
             init_timescale=init_timescale,
+            shared_timescale=shared_timescale,
+            normalize_hidden=normalize_hidden,
+            zero_diag_wrec=zero_diag_wrec,
         )
         self.W_out = nn.Linear(hidden_size, output_size, bias=False)
 
@@ -253,23 +313,27 @@ class MultiTimescaleRNN(nn.Module):
     def forward(
         self,
         inputs: torch.Tensor,
-        place_cells_0: torch.Tensor,
+        init_context: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass through the multi-timescale RNN.
 
         :param inputs: (batch, time, input_size)
-        :param place_cells_0: (batch, output_size) - used to initialize the hidden state
+        :param init_context: (batch, output_size) - optional context to initialize hidden state.
+                            If None, hidden state is initialized to zeros.
 
         :return: hidden_states: (batch, time, hidden_size)
         :return: outputs: (batch, time, output_size)
         """
-        _, seq_len, _ = inputs.shape
+        batch_size, seq_len, _ = inputs.shape
 
         # Initialize hidden state
         hidden_states = []
         outputs = []
-        hidden = self.W_h_init(place_cells_0)
+        if init_context is not None:
+            hidden = self.W_h_init(init_context)
+        else:
+            hidden = torch.zeros(batch_size, self.hidden_size, device=inputs.device)
 
         for t in range(seq_len):
             input_t = inputs[:, t, :]
@@ -325,6 +389,9 @@ class MultiTimescaleRNNLightning(L.LightningModule):
         weight_decay: float,
         step_size: int,
         gamma: float,
+        task: str = "path_integration",
+        precondition_gradients: bool = False,
+        eps_alpha: float = 1e-2,
     ) -> None:
         """
         Initialize the Multi-timescale RNN Lightning module.
@@ -334,6 +401,9 @@ class MultiTimescaleRNNLightning(L.LightningModule):
         :param weight_decay: The weight decay for the recurrent weights.
         :param step_size: The step size for the learning rate scheduler.
         :param gamma: The gamma for the learning rate scheduler.
+        :param task: The task type ("path_integration" or "binary_counter").
+        :param precondition_gradients: If True, apply alpha-based gradient preconditioning.
+        :param eps_alpha: Damping constant for numerical stability in preconditioner (1/(alpha + eps)).
         """
         super().__init__()
         self.model = model
@@ -341,19 +411,77 @@ class MultiTimescaleRNNLightning(L.LightningModule):
         self.weight_decay = weight_decay
         self.step_size = step_size
         self.gamma = gamma
+        self.task = task
+        self.precondition_gradients = precondition_gradients
+        self.eps_alpha = eps_alpha
+        
+        # Task-specific loss function
+        if task == "binary_counter":
+            self.loss_fn = nn.BCEWithLogitsLoss(reduction='none')  # Use 'none' to compute per-sample losses
+
+        if precondition_gradients:
+            print(f"Gradient preconditioning ENABLED (eps_alpha={eps_alpha})")
+        else:
+            print(f"Gradient preconditioning DISABLED")
+
+    def _compute_loss(self, outputs: torch.Tensor, targets: torch.Tensor) -> tuple[torch.Tensor, dict[str, torch.Tensor] | None]:
+        """
+        Compute task-specific loss.
+        
+        Returns:
+            total_loss: Scalar loss value
+            per_channel_losses: Dict mapping channel names to per-channel losses (None for path_integration)
+        """
+        if self.task == "path_integration":
+            # Cross-entropy loss for place cell prediction
+            y = targets.reshape(-1, self.model.output_size)
+            yhat = torch.softmax(outputs.reshape(-1, self.model.output_size), dim=-1)
+            loss = -(y * torch.log(yhat + 1e-8)).sum(-1).mean()
+            return loss, None
+        elif self.task == "binary_counter":
+            # BCE loss for binary state prediction
+            # outputs: (batch, seq_len, n_levels)
+            # targets: (batch, seq_len, n_levels)
+            batch_size, seq_len, n_levels = outputs.shape
+            
+            # Reshape to (batch * seq_len, n_levels)
+            outputs_flat = outputs.reshape(-1, n_levels)
+            targets_flat = targets.reshape(-1, n_levels)
+            
+            # Compute per-sample, per-channel loss: (batch * seq_len, n_levels)
+            per_sample_loss = self.loss_fn(outputs_flat, targets_flat)
+            
+            # Average across samples and time steps, keep channel dimension: (n_levels,)
+            per_channel_loss = per_sample_loss.mean(dim=0)
+            
+            # Total loss: average across all channels
+            total_loss = per_channel_loss.mean()
+            
+            # Create dict for logging
+            per_channel_dict = {
+                f"channel_{i}": per_channel_loss[i].item()
+                for i in range(n_levels)
+            }
+            
+            return total_loss, per_channel_dict
+        else:
+            raise ValueError(f"Unknown task: {self.task}")
 
     def training_step(self, batch) -> torch.Tensor:
-        inputs, target_positions, target_place_cells = batch
+        inputs, aux_info, targets = batch
+        
+        if self.task == "path_integration":
+            # Use first place cell activation for initialization
+            init_context = targets[:, 0, :]
+        else:
+            # Use zeros for initialization in other tasks
+            init_context = None
+            
         hidden_states, outputs = self.model(
-            inputs=inputs, place_cells_0=target_place_cells[:, 0, :]
+            inputs=inputs, init_context=init_context
         )
 
-        # Cross-entropy loss
-        y = target_place_cells.reshape(-1, self.model.output_size)
-        yhat = torch.softmax(outputs.reshape(-1, self.model.output_size), dim=-1)
-        loss = (
-            -(y * torch.log(yhat + 1e-8)).sum(-1).mean()
-        )  # Add small epsilon for numerical stability
+        loss, per_channel_losses = self._compute_loss(outputs, targets)
 
         # Weight regularization on recurrent weights
         loss += self.weight_decay * (self.model.rnn_step.W_rec.weight**2).sum()
@@ -366,21 +494,33 @@ class MultiTimescaleRNNLightning(L.LightningModule):
             prog_bar=True,
             sync_dist=True,
         )
+        
+        # Log per-channel losses for binary_counter task
+        if per_channel_losses is not None:
+            for channel_name, channel_loss in per_channel_losses.items():
+                self.log(
+                    f"train_loss_{channel_name}",
+                    channel_loss,
+                    on_step=True,
+                    on_epoch=True,
+                    sync_dist=True,
+                )
 
         return loss
 
     def validation_step(self, batch) -> torch.Tensor:
-        inputs, target_positions, target_place_cells = batch
+        inputs, aux_info, targets = batch
+        
+        if self.task == "path_integration":
+            init_context = targets[:, 0, :]
+        else:
+            init_context = None
+            
         hidden_states, outputs = self.model(
-            inputs=inputs, place_cells_0=target_place_cells[:, 0, :]
+            inputs=inputs, init_context=init_context
         )
 
-        # Cross-entropy loss
-        y = target_place_cells.reshape(-1, self.model.output_size)
-        yhat = torch.softmax(outputs.reshape(-1, self.model.output_size), dim=-1)
-        loss = (
-            -(y * torch.log(yhat + 1e-8)).sum(-1).mean()
-        )  # Add small epsilon for numerical stability
+        loss, per_channel_losses = self._compute_loss(outputs, targets)
 
         # Weight regularization on recurrent weights
         loss += self.weight_decay * (self.model.rnn_step.W_rec.weight**2).sum()
@@ -393,6 +533,17 @@ class MultiTimescaleRNNLightning(L.LightningModule):
             prog_bar=True,
             sync_dist=True,
         )
+        
+        # Log per-channel losses for binary_counter task
+        if per_channel_losses is not None:
+            for channel_name, channel_loss in per_channel_losses.items():
+                self.log(
+                    f"val_loss_{channel_name}",
+                    channel_loss,
+                    on_step=False,
+                    on_epoch=True,
+                    sync_dist=True,
+                )
 
         return loss
 
@@ -415,7 +566,45 @@ class MultiTimescaleRNNLightning(L.LightningModule):
             },
         }
 
+    def on_before_optimizer_step(self, optimizer):
+        """Apply alpha-based gradient preconditioning before optimizer step.
+        
+        Scales gradients by P = diag(1/(alpha_i + eps)) to compensate for
+        different update rates across neurons with different timescales.
+        """
+        if not self.precondition_gradients:
+            return
+
+        
+        # Get alphas (detach to avoid gradient flow through preconditioner)
+        alphas = self.model.rnn_step.current_alphas.detach()
+        
+        # Compute preconditioner: p_i = 1 / (alpha_i + eps)
+        preconditioner = 1.0 / (alphas + self.eps_alpha)  # shape: (hidden_size,)
+        
+        # Apply to W_in gradient (shape: hidden_size × input_size)
+        if self.model.rnn_step.W_in.weight.grad is not None:
+            self.model.rnn_step.W_in.weight.grad *= preconditioner.unsqueeze(1)
+        
+        # Apply to W_in bias gradient (shape: hidden_size)
+        if self.model.rnn_step.W_in.bias.grad is not None:
+            self.model.rnn_step.W_in.bias.grad *= preconditioner
+        
+        # Apply to W_rec gradient (shape: hidden_size × hidden_size)
+        if self.model.rnn_step.W_rec.weight.grad is not None:
+            self.model.rnn_step.W_rec.weight.grad *= preconditioner.unsqueeze(1)
+        
+        # Apply to W_rec bias gradient (shape: hidden_size)
+        if self.model.rnn_step.W_rec.bias.grad is not None:
+            self.model.rnn_step.W_rec.bias.grad *= preconditioner
+        
+        # Apply to W_h_init gradient (shape: hidden_size × output_size)
+        if self.model.W_h_init.weight.grad is not None:
+            self.model.W_h_init.weight.grad *= preconditioner.unsqueeze(1)
+
     def on_train_start(self):
         """Log timescale statistics at the start of training."""
         timescale_stats = self.model.get_timescale_stats()
         print(f"Timescale statistics: {timescale_stats}")
+        if self.precondition_gradients:
+            print(f"Gradient preconditioning ENABLED (eps_alpha={self.eps_alpha})")

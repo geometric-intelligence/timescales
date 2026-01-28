@@ -1,22 +1,41 @@
 #!/usr/bin/env python3
 """
-Parameter sweep experiment runner.
+Parameter sweep experiment runner with multi-GPU scheduling.
 
 Takes an experiment configuration file and runs all parameter combinations
-with multiple seeds for uncertainty quantification.
+with multiple seeds, distributed across available GPUs.
+
+Usage:
+    # Run on all 4 GPUs in parallel
+    python run_sweep.py --sweep sweep_configs/my_sweep.yaml --gpus 0,1,2,3
+    
+    # Run on single GPU (sequential)
+    python run_sweep.py --sweep sweep_configs/my_sweep.yaml --gpus 0
+    
+    # Run sequentially on default GPU
+    python run_sweep.py --sweep sweep_configs/my_sweep.yaml
 """
 
 import os
+import sys
 import yaml
 import argparse
 import datetime
 import copy
 import itertools
+import subprocess
+import tempfile
 from typing import List, Dict, Any, Tuple
-from single_run import single_seed
+from pathlib import Path
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from queue import Queue
+from threading import Lock
 import numpy as np
-from lightning.pytorch.utilities.rank_zero import rank_zero_only
 
+
+# ============================================================================
+# Configuration Loading and Generation
+# ============================================================================
 
 def deep_merge_dict(base: Dict, override: Dict) -> Dict:
     """Deep merge override dictionary into base dictionary."""
@@ -50,23 +69,7 @@ def load_sweep_config(sweep_file: str) -> Dict:
 
 
 def generate_grid_experiments(sweep_config: Dict) -> List[Tuple[str, Dict]]:
-    """Generate experiment configurations from grid specification.
-    
-    Expects sweep_config to have a 'grid' key with parameter specifications:
-    
-    grid:
-      linear_speed_mean: [0.05, 0.1, 0.15, ...]
-      timescale_values: [0.949, 0.448, 0.280, ...]  # For discrete timescales
-    
-    Or for complex nested parameters:
-    
-    grid:
-      linear_speed_mean: [0.05, 0.1, 0.15, ...]
-      timescales_config__values: [[0.949], [0.448], [0.280], ...]  # Use __ for nested keys
-    
-    Optional fixed_overrides: Applied to all experiments before grid params
-    Optional naming: Custom naming format specification
-    """
+    """Generate experiment configurations from grid specification."""
     base_config = sweep_config["_base_config"]
     grid_spec = sweep_config["grid"]
     fixed_overrides = sweep_config.get("fixed_overrides", {})
@@ -91,7 +94,7 @@ def generate_grid_experiments(sweep_config: Dict) -> List[Tuple[str, Dict]]:
     for combo in combinations:
         # Create overrides dict for this combination
         overrides = {}
-        name_parts = {}  # Use dict to track specific naming components
+        name_parts = {}
         
         for param_name, value in zip(param_names, combo):
             # Handle nested keys (e.g., "timescales_config__std")
@@ -104,35 +107,19 @@ def generate_grid_experiments(sweep_config: Dict) -> List[Tuple[str, Dict]]:
                     current = current[key]
                 current[keys[-1]] = value
                 
-                # Special handling for timescales_config__values to compute alpha
-                if param_name == "timescales_config__values" and isinstance(value, list) and len(value) == 1:
-                    # Compute alpha from timescale: alpha = 1 - exp(-dt / timescale)
-                    dt = base_config.get("dt", 0.1)  # Default dt = 0.1s
-                    timescale = value[0]
-                    alpha = 1 - np.exp(-dt / timescale) if timescale > 0.001 else 1.0
-                    name_parts["alpha"] = f"{alpha:.1f}"
+                if isinstance(value, float):
+                    name_parts[param_name] = f"{value:.3g}"
                 else:
-                    # Store the nested param for naming
-                    # Use full param name for naming clarity
-                    if isinstance(value, float):
-                        name_parts[param_name] = f"{value:.3g}"
-                    else:
-                        name_parts[param_name] = str(value)
+                    name_parts[param_name] = str(value)
             else:
                 overrides[param_name] = value
-                
-                # Format value for name based on parameter type
-                if param_name == "linear_speed_mean":
-                    name_parts["speed"] = f"{value:.2f}"
-                elif isinstance(value, float):
+                if isinstance(value, float):
                     name_parts[param_name] = f"{value:.3g}"
                 else:
                     name_parts[param_name] = str(value)
         
         # Generate experiment name
         if "format" in naming_config:
-            # Use custom format string
-            # Replace {param_name} with values
             exp_name = naming_config["format"]
             for param_name, value in zip(param_names, combo):
                 if isinstance(value, float):
@@ -140,11 +127,7 @@ def generate_grid_experiments(sweep_config: Dict) -> List[Tuple[str, Dict]]:
                 else:
                     formatted_value = str(value)
                 exp_name = exp_name.replace("{" + param_name + "}", formatted_value)
-        elif "speed" in name_parts and "alpha" in name_parts:
-            # Legacy: speed_X_alpha_Y format if both exist
-            exp_name = f"speed_{name_parts['speed']}_alpha_{name_parts['alpha']}"
         else:
-            # Fallback to generic naming
             exp_name = "_".join(f"{k}_{v}" for k, v in name_parts.items())
         
         # Merge: base_with_fixed + grid overrides
@@ -155,39 +138,238 @@ def generate_grid_experiments(sweep_config: Dict) -> List[Tuple[str, Dict]]:
 
 
 def generate_experiment_configs(sweep_config: Dict) -> List[Tuple[str, Dict]]:
-    """Generate all individual experiment configurations from sweep.
-    
-    Supports two modes:
-    1. 'experiments' list: Manually specified experiments
-    2. 'grid' dict: Automatic grid generation from parameter lists
-    """
+    """Generate all individual experiment configurations from sweep."""
     base_config = sweep_config["_base_config"]
     
-    # Check if grid mode
     if "grid" in sweep_config:
         return generate_grid_experiments(sweep_config)
     
     # Original experiments list mode
     experiments = sweep_config["experiments"]
+    fixed_overrides = sweep_config.get("fixed_overrides", {})
+    base_with_fixed = deep_merge_dict(base_config, fixed_overrides)
+    
     experiment_configs = []
     for exp in experiments:
         exp_name = exp["name"]
         overrides = exp.get("overrides", {})
-
-        # Merge base config with overrides
-        merged_config = deep_merge_dict(base_config, overrides)
+        merged_config = deep_merge_dict(base_with_fixed, overrides)
         experiment_configs.append((exp_name, merged_config))
 
     return experiment_configs
 
 
-@rank_zero_only
+# ============================================================================
+# Job Definition
+# ============================================================================
+
+class Job:
+    """A single training job (one experiment + one seed)."""
+    def __init__(self, exp_name: str, config: Dict, seed: int, sweep_dir: str):
+        self.exp_name = exp_name
+        self.config = config
+        self.seed = seed
+        self.sweep_dir = sweep_dir
+        self.gpu_id = None  # Assigned when scheduled
+    
+    @property
+    def job_id(self) -> str:
+        return f"{self.exp_name}_seed{self.seed}"
+    
+    @property
+    def seed_dir(self) -> str:
+        return os.path.join(self.sweep_dir, self.exp_name, f"seed_{self.seed}")
+
+
+def create_jobs(
+    experiment_configs: List[Tuple[str, Dict]], 
+    seeds: List[int], 
+    sweep_dir: str
+) -> List[Job]:
+    """Create all jobs for the sweep."""
+    jobs = []
+    for exp_name, config in experiment_configs:
+        for seed in seeds:
+            jobs.append(Job(exp_name, config, seed, sweep_dir))
+    return jobs
+
+
+# ============================================================================
+# Job Execution (Subprocess-based for isolation)
+# ============================================================================
+
+def run_job_subprocess(job: Job, gpu_id: int) -> Dict[str, Any]:
+    """
+    Run a single job in a subprocess for complete isolation.
+    
+    This avoids DDP issues and ensures clean WandB run separation.
+    """
+    # Create seed directory
+    os.makedirs(job.seed_dir, exist_ok=True)
+    
+    # Prepare config with GPU and sweep info
+    run_config = copy.deepcopy(job.config)
+    run_config["seed"] = job.seed
+    run_config["sweep_dir"] = job.sweep_dir
+    run_config["experiment_name"] = job.exp_name
+    # Force single GPU (no DDP)
+    # Use device [0] because CUDA_VISIBLE_DEVICES makes the target GPU appear as device 0
+    run_config["devices"] = [0]
+    run_config["accelerator"] = "gpu"
+    
+    # Write config to temp file
+    config_file = os.path.join(job.seed_dir, "run_config.yaml")
+    with open(config_file, "w") as f:
+        yaml.dump(run_config, f, default_flow_style=False)
+    
+    # Run training in subprocess
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    cmd = [
+        sys.executable,
+        os.path.join(script_dir, "run_single_job.py"),
+        "--config", config_file,
+    ]
+    
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    
+    print(f"[GPU {gpu_id}] Starting {job.job_id}")
+    
+    import time
+    start_time = time.time()
+    
+    try:
+        result = subprocess.run(
+            cmd,
+            env=env,
+            capture_output=True,
+            text=True,
+            cwd=script_dir,
+        )
+        
+        elapsed_time = time.time() - start_time
+        elapsed_str = _format_duration(elapsed_time)
+        
+        if result.returncode == 0:
+            # Try to read the result file
+            result_file = os.path.join(job.seed_dir, "job_result.yaml")
+            if os.path.exists(result_file):
+                with open(result_file, "r") as f:
+                    job_result = yaml.safe_load(f)
+            else:
+                job_result = {"final_val_loss": None}
+            
+            print(f"[GPU {gpu_id}] ✓ {job.job_id} completed in {elapsed_str}")
+            return {
+                "experiment_name": job.exp_name,
+                "seed": job.seed,
+                "status": "completed",
+                "seed_dir": job.seed_dir,
+                "final_val_loss": job_result.get("final_val_loss"),
+                "runtime_seconds": elapsed_time,
+                "runtime_str": elapsed_str,
+                "completed_at": datetime.datetime.now().isoformat(),
+            }
+        else:
+            print(f"[GPU {gpu_id}] ✗ {job.job_id} failed after {elapsed_str}")
+            print(f"  stderr: {result.stderr[:500] if result.stderr else 'None'}")
+            return {
+                "experiment_name": job.exp_name,
+                "seed": job.seed,
+                "status": "failed",
+                "error": result.stderr[:1000] if result.stderr else "Unknown error",
+                "runtime_seconds": elapsed_time,
+                "failed_at": datetime.datetime.now().isoformat(),
+            }
+            
+    except Exception as e:
+        elapsed_time = time.time() - start_time
+        print(f"[GPU {gpu_id}] ✗ {job.job_id} exception: {e}")
+        return {
+            "experiment_name": job.exp_name,
+            "seed": job.seed,
+            "status": "failed",
+            "error": str(e),
+            "runtime_seconds": elapsed_time,
+            "failed_at": datetime.datetime.now().isoformat(),
+        }
+
+
+def _format_duration(seconds: float) -> str:
+    """Format duration in human-readable format."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    elif seconds < 3600:
+        minutes = seconds / 60
+        return f"{minutes:.1f}m"
+    else:
+        hours = seconds / 3600
+        return f"{hours:.1f}h"
+
+
+# ============================================================================
+# GPU Pool Scheduler
+# ============================================================================
+
+class GPUScheduler:
+    """Manages GPU allocation for parallel job execution."""
+    
+    def __init__(self, gpu_ids: List[int]):
+        self.gpu_ids = gpu_ids
+        self.n_gpus = len(gpu_ids)
+        
+    def run_jobs_parallel(self, jobs: List[Job]) -> List[Dict[str, Any]]:
+        """Run jobs in parallel across available GPUs."""
+        results = []
+        
+        if self.n_gpus == 0:
+            print("No GPUs specified, running sequentially on CPU")
+            for job in jobs:
+                result = run_job_subprocess(job, gpu_id=0)
+                results.append(result)
+            return results
+        
+        print(f"\nScheduling {len(jobs)} jobs across {self.n_gpus} GPUs: {self.gpu_ids}")
+        print("=" * 60)
+        
+        # Use ProcessPoolExecutor with max_workers = n_gpus
+        with ProcessPoolExecutor(max_workers=self.n_gpus) as executor:
+            # Submit jobs round-robin across GPUs
+            future_to_job = {}
+            for i, job in enumerate(jobs):
+                gpu_id = self.gpu_ids[i % self.n_gpus]
+                future = executor.submit(run_job_subprocess, job, gpu_id)
+                future_to_job[future] = job
+            
+            # Collect results as they complete
+            for future in as_completed(future_to_job):
+                job = future_to_job[future]
+                try:
+                    result = future.result()
+                    results.append(result)
+                except Exception as e:
+                    print(f"Job {job.job_id} raised exception: {e}")
+                    results.append({
+                        "experiment_name": job.exp_name,
+                        "seed": job.seed,
+                        "status": "failed",
+                        "error": str(e),
+                        "failed_at": datetime.datetime.now().isoformat(),
+                    })
+        
+        return results
+
+
+# ============================================================================
+# Sweep Management
+# ============================================================================
+
 def save_sweep_metadata(
     sweep_dir: str, sweep_config: Dict, experiment_configs: List[Tuple[str, Dict]]
 ) -> None:
     """Save sweep metadata and configurations."""
-
-    # Save sweep metadata
+    os.makedirs(sweep_dir, exist_ok=True)
+    
     sweep_metadata = {
         "sweep_name": os.path.basename(sweep_dir),
         "base_config_file": sweep_config["base_config"],
@@ -214,146 +396,45 @@ def save_sweep_metadata(
     print(f"Sweep metadata saved to: {metadata_path}")
 
 
-def run_experiment(
-    exp_name: str, config: Dict, seeds: List[int], sweep_dir: str
-) -> List[Dict[str, Any]]:
-    """Run a single experiment configuration with multiple seeds."""
-
-    print(f"\n{'='*80}")
-    print(f"RUNNING EXPERIMENT: {exp_name}")
-    print(f"Seeds: {seeds}")
-    print(f"{'='*80}")
-
-    # Create experiment directory
-    exp_dir = os.path.join(sweep_dir, exp_name)
-    os.makedirs(exp_dir, exist_ok=True)
-
-    # Run each seed
-    run_results = []
-    for seed_idx, seed in enumerate(seeds):
-        print(f"\n{'-'*60}")
-        print(f"EXPERIMENT {exp_name} - SEED {seed_idx + 1}/{len(seeds)}: seed={seed}")
-        print(f"{'-'*60}")
-
-        # Create seed config for single_seed
-        seed_config = config.copy()
-        seed_config["seed"] = seed
-        seed_config["sweep_dir"] = sweep_dir
-        seed_config["experiment_name"] = exp_name
-
-        # The seed directory will be: sweep_dir/exp_name/seed_{seed}/
-        seed_dir = os.path.join(exp_dir, f"seed_{seed}")
-
-        try:
-            result = single_seed(seed_config)
-
-            # Save run summary
-            run_summary = {
-                "experiment_name": exp_name,
-                "seed": seed,
-                "status": "completed",
-                "seed_dir": seed_dir,
-                "final_val_loss": result.get("final_val_loss", None),
-                "completed_at": datetime.datetime.now().isoformat(),
-            }
-
-            summary_path = os.path.join(seed_dir, "run_summary.yaml")
-            with open(summary_path, "w") as f:
-                yaml.dump(run_summary, f, default_flow_style=False, indent=2)
-
-            print(f"✓ {exp_name} seed {seed} completed successfully")
-            run_results.append(run_summary)
-
-        except Exception as e:
-            print(f"✗ {exp_name} seed {seed} failed with error: {str(e)}")
-
-            # Save error summary
-            error_summary = {
-                "experiment_name": exp_name,
-                "seed": seed,
-                "status": "failed",
-                "error": str(e),
-                "failed_at": datetime.datetime.now().isoformat(),
-            }
-
-            os.makedirs(seed_dir, exist_ok=True)
-            error_path = os.path.join(seed_dir, "error_summary.yaml")
-            with open(error_path, "w") as f:
-                yaml.dump(error_summary, f, default_flow_style=False, indent=2)
-
-            run_results.append(error_summary)
-
-    # Generate experiment summary
-    successful_runs = [r for r in run_results if r["status"] == "completed"]
-    val_losses = [
-        r["final_val_loss"]
-        for r in successful_runs
-        if r.get("final_val_loss") is not None
-    ]
-
-    exp_summary = {
-        "experiment_name": exp_name,
-        "experiment_completed_at": datetime.datetime.now().isoformat(),
-        "total_seeds": len(run_results),
-        "successful_runs": len(successful_runs),
-        "failed_runs": len(run_results) - len(successful_runs),
-        "success_rate": len(successful_runs) / len(run_results) if run_results else 0,
-    }
-
-    if val_losses:
-        exp_summary["validation_loss_stats"] = {
-            "mean": float(np.mean(val_losses)),
-            "std": float(np.std(val_losses)),
-            "min": float(np.min(val_losses)),
-            "max": float(np.max(val_losses)),
-            "median": float(np.median(val_losses)),
-        }
-
-    exp_summary["run_details"] = run_results
-
-    # Save experiment summary
-    summary_path = os.path.join(exp_dir, "experiment_summary.yaml")
-    with open(summary_path, "w") as f:
-        yaml.dump(exp_summary, f, default_flow_style=False, indent=2)
-
-    print(f"\nExperiment {exp_name} complete!")
-    print(f"Successful runs: {len(successful_runs)}/{len(run_results)}")
-    if val_losses:
-        print(
-            f"Validation loss: {exp_summary['validation_loss_stats']['mean']:.4f} ± {exp_summary['validation_loss_stats']['std']:.4f}"
-        )
-
-    return run_results
-
-
-@rank_zero_only
 def generate_sweep_summary(
-    sweep_dir: str, all_results: Dict[str, List[Dict[str, Any]]]
+    sweep_dir: str, all_results: List[Dict[str, Any]]
 ) -> None:
     """Generate overall sweep summary."""
-
-    # Aggregate statistics across all experiments
-    total_runs = sum(len(results) for results in all_results.values())
-    total_successful = sum(
-        len([r for r in results if r["status"] == "completed"])
-        for results in all_results.values()
-    )
+    
+    # Group results by experiment
+    exp_results = {}
+    for result in all_results:
+        exp_name = result["experiment_name"]
+        if exp_name not in exp_results:
+            exp_results[exp_name] = []
+        exp_results[exp_name].append(result)
+    
+    # Aggregate statistics
+    total_runs = len(all_results)
+    total_successful = len([r for r in all_results if r["status"] == "completed"])
+    
+    # Calculate total runtime
+    all_runtimes = [r.get("runtime_seconds", 0) for r in all_results]
+    total_runtime = sum(all_runtimes)
 
     # Per-experiment statistics
     experiment_stats = {}
-    for exp_name, results in all_results.items():
+    for exp_name, results in exp_results.items():
         successful = [r for r in results if r["status"] == "completed"]
         val_losses = [
             r["final_val_loss"]
             for r in successful
             if r.get("final_val_loss") is not None
         ]
+        runtimes = [r.get("runtime_seconds", 0) for r in results]
 
         stats = {
             "total_runs": len(results),
             "successful_runs": len(successful),
             "failed_runs": len(results) - len(successful),
             "success_rate": len(successful) / len(results) if results else 0,
+            "total_runtime_seconds": sum(runtimes),
+            "total_runtime_str": _format_duration(sum(runtimes)),
         }
 
         if val_losses:
@@ -370,11 +451,13 @@ def generate_sweep_summary(
     # Overall sweep summary
     sweep_summary = {
         "sweep_completed_at": datetime.datetime.now().isoformat(),
-        "total_experiments": len(all_results),
+        "total_experiments": len(exp_results),
         "total_runs": total_runs,
         "total_successful_runs": total_successful,
         "total_failed_runs": total_runs - total_successful,
         "overall_success_rate": total_successful / total_runs if total_runs else 0,
+        "total_runtime_seconds": total_runtime,
+        "total_runtime_str": _format_duration(total_runtime),
         "experiment_statistics": experiment_stats,
     }
 
@@ -386,84 +469,109 @@ def generate_sweep_summary(
     print(f"\n{'='*80}")
     print("PARAMETER SWEEP COMPLETE")
     print(f"{'='*80}")
-    print(f"Total experiments: {len(all_results)}")
+    print(f"Total experiments: {len(exp_results)}")
     print(f"Total runs: {total_runs}")
     print(f"Successful runs: {total_successful}/{total_runs}")
     print(f"Overall success rate: {sweep_summary['overall_success_rate']:.2%}")
+    print(f"Total runtime: {_format_duration(total_runtime)}")
     print(f"Results saved to: {sweep_dir}")
     print(f"Summary: {summary_path}")
 
     # Print per-experiment summary
     print("\nPer-experiment results:")
     for exp_name, stats in experiment_stats.items():
-        print(
-            f"  {exp_name}: {stats['successful_runs']}/{stats['total_runs']} successful",
-            end="",
-        )
+        runtime_str = stats.get("total_runtime_str", "?")
+        status_str = f"{stats['successful_runs']}/{stats['total_runs']} successful"
+        
         if "validation_loss_stats" in stats:
-            print(
-                f" (val_loss: {stats['validation_loss_stats']['mean']:.4f} ± {stats['validation_loss_stats']['std']:.4f})"
-            )
+            loss_str = f"val_loss: {stats['validation_loss_stats']['mean']:.4f} ± {stats['validation_loss_stats']['std']:.4f}"
+            print(f"  {exp_name}: {status_str}, {loss_str}, runtime: {runtime_str}")
         else:
-            print()
+            print(f"  {exp_name}: {status_str}, runtime: {runtime_str}")
 
 
-@rank_zero_only
-def create_sweep_directory_only(sweep_dir: str) -> None:
-    """Create sweep directory structure (rank 0 only)."""
-    os.makedirs(sweep_dir, exist_ok=True)
-
-
-def run_parameter_sweep(sweep_file: str):
-    """Run full parameter sweep experiment."""
+def run_parameter_sweep(sweep_file: str, gpu_ids: List[int] = None):
+    """Run full parameter sweep experiment with multi-GPU scheduling."""
     print(f"Loading parameter sweep configuration: {sweep_file}")
 
     # Load sweep configuration
     sweep_config = load_sweep_config(sweep_file)
     n_seeds = sweep_config["n_seeds"]
     experiment_configs = generate_experiment_configs(sweep_config)
+    
+    # Get GPUs from config if not specified on command line
+    if gpu_ids is None:
+        gpu_ids = sweep_config.get("gpus", [0])
+        if isinstance(gpu_ids, int):
+            gpu_ids = [gpu_ids]
 
-    print("Parameter sweep configuration:")
+    print("\nParameter sweep configuration:")
     print(f"  Base config: {sweep_config['base_config']}")
     print(f"  Number of experiments: {len(experiment_configs)}")
     print(f"  Seeds per experiment: {n_seeds}")
     print(f"  Total runs: {len(experiment_configs) * n_seeds}")
     print(f"  Experiments: {[name for name, _ in experiment_configs]}")
+    print(f"  GPUs: {gpu_ids}")
 
     # Create sweep directory
     log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "logs"))
     sweep_name = os.path.splitext(os.path.basename(sweep_file))[0]
-
-    sweep_file_mtime = os.path.getmtime(sweep_file)
-    timestamp = datetime.datetime.fromtimestamp(sweep_file_mtime).strftime(
-        "%Y%m%d_%H%M%S"
-    )
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     sweep_dir = os.path.join(log_dir, "experiments", f"{sweep_name}_{timestamp}")
 
-    # Rest stays the same...
-    create_sweep_directory_only(sweep_dir)  # Already has @rank_zero_only
-    save_sweep_metadata(
-        sweep_dir, sweep_config, experiment_configs
-    )  # Already has @rank_zero_only
+    os.makedirs(sweep_dir, exist_ok=True)
+    print(f"\nSweep directory: {sweep_dir}")
 
+    # Save metadata
+    save_sweep_metadata(sweep_dir, sweep_config, experiment_configs)
+
+    # Create all jobs
     seeds = list(range(n_seeds))
+    jobs = create_jobs(experiment_configs, seeds, sweep_dir)
+    
+    # Run jobs with GPU scheduler
+    if gpu_ids is None:
+        gpu_ids = [0]  # Default to GPU 0
+    
+    scheduler = GPUScheduler(gpu_ids)
+    all_results = scheduler.run_jobs_parallel(jobs)
 
-    all_results = {}
-    for exp_name, config in experiment_configs:
-        results = run_experiment(exp_name, config, seeds, sweep_dir)
-        all_results[exp_name] = results
-
-    generate_sweep_summary(sweep_dir, all_results)  # Already has @rank_zero_only
+    # Generate summary
+    generate_sweep_summary(sweep_dir, all_results)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run parameter sweep experiment")
+    parser = argparse.ArgumentParser(
+        description="Run parameter sweep with multi-GPU scheduling",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Run on GPUs 0,1,2,3 in parallel
+  python run_sweep.py --sweep sweep_configs/my_sweep.yaml --gpus 0,1,2,3
+  
+  # Run on single GPU
+  python run_sweep.py --sweep sweep_configs/my_sweep.yaml --gpus 2
+  
+  # Run sequentially on default GPU
+  python run_sweep.py --sweep sweep_configs/my_sweep.yaml
+        """
+    )
     parser.add_argument(
-        "--sweep", type=str, required=True, help="Path to sweep configuration file"
+        "--sweep", type=str, required=True, 
+        help="Path to sweep configuration file"
+    )
+    parser.add_argument(
+        "--gpus", type=str, default=None,
+        help="Comma-separated GPU IDs to use (e.g., '0,1,2,3'). Overrides config file."
     )
     args = parser.parse_args()
 
-    run_parameter_sweep(args.sweep)
+    # Parse GPU IDs (None if not specified, let config file decide)
+    gpu_ids = None
+    if args.gpus is not None:
+        gpu_ids = [int(g.strip()) for g in args.gpus.split(",")]
+    
+    run_parameter_sweep(args.sweep, gpu_ids=gpu_ids)
 
 
 if __name__ == "__main__":

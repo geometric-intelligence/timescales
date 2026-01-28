@@ -1,0 +1,98 @@
+# Timescale Distribution Sweep
+# 
+# Compare different neural timescale distributions across activation functions
+# Tests: 2 activations × 4 timescale distributions = 8 experiments
+#
+# Timescale distributions:
+#   - discrete_1: Single timescale (α=0.5 → τ=0.144s)
+#   - discrete_2: Two timescales (α=0.25,0.75 → τ=0.348,0.072s)
+#   - discrete_4: Four timescales (α=0.2,0.4,0.6,0.8 → τ=0.448,0.196,0.109,0.062s)
+#   - powerlaw: Continuous power-law (exponent=2.0, range [0.05, 2.0]s)
+
+base_config: "base_configs/mts.yaml"
+n_seeds: 1
+gpus: [0, 1, 2, 3]
+
+fixed_overrides:
+  # Uniform behavioral timescale (no heterogeneity)
+  behavioral_timescale_mean: 0.6
+  behavioral_timescale_std: 0.0
+  
+  # Fixed timescales (not learnable)
+  learn_timescales: false
+  
+  # Training settings
+  max_epochs: 200
+  num_trajectories: 100000
+  hidden_size: 256
+
+  # Gradient preconditioning (scales gradients by 1/(alpha + eps) per neuron)
+  precondition_gradients: true  # Enable alpha-based gradient preconditioning
+  eps_alpha: 0.01                # Damping constant for preconditioner stability
+
+experiments:
+  # ============ ReLU Experiments ============
+  - name: "ReLU_discrete_1"
+    overrides:
+      activation: "ReLU"
+      timescales_config:
+        type: "discrete"
+        values: [0.144]  # α = 0.5
+  
+  - name: "ReLU_discrete_2"
+    overrides:
+      activation: "ReLU"
+      timescales_config:
+        type: "discrete"
+        values: [0.348, 0.072]  # α = 0.25, 0.75
+  
+  - name: "ReLU_discrete_4"
+    overrides:
+      activation: "ReLU"
+      timescales_config:
+        type: "discrete"
+        values: [0.448, 0.196, 0.109, 0.062]  # α = 0.2, 0.4, 0.6, 0.8
+  
+  - name: "ReLU_powerlaw"
+    overrides:
+      activation: "ReLU"
+      timescales_config:
+        type: "continuous"
+        distribution: "powerlaw"
+        exponent: 2.0
+        min_timescale: 0.05
+        max_timescale: 2.0
+
+  # ============ Tanh Experiments ============
+  - name: "Tanh_discrete_1"
+    overrides:
+      activation: "Tanh"
+      timescales_config:
+        type: "discrete"
+        values: [0.144]  # α = 0.5
+  
+  - name: "Tanh_discrete_2"
+    overrides:
+      activation: "Tanh"
+      timescales_config:
+        type: "discrete"
+        values: [0.348, 0.072]  # α = 0.25, 0.75
+  
+  - name: "Tanh_discrete_4"
+    overrides:
+      activation: "Tanh"
+      timescales_config:
+        type: "discrete"
+        values: [0.448, 0.196, 0.109, 0.062]  # α = 0.2, 0.4, 0.6, 0.8
+  
+  - name: "Tanh_powerlaw"
+    overrides:
+      activation: "Tanh"
+      timescales_config:
+        type: "continuous"
+        distribution: "powerlaw"
+        exponent: 2.0
+        min_timescale: 0.05
+        max_timescale: 2.0
+
+
