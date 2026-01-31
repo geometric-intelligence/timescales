@@ -18,7 +18,11 @@ from callbacks import (
 
 from timescales.analysis.measurements import PositionDecodingMeasurement
 
-from timescales.datamodules import PathIntegrationDataModule, HierarchicalCounterDataModule
+from timescales.datamodules import (
+    PathIntegrationDataModule,
+    PathIntegration1DDataModule,
+    HierarchicalCounterDataModule,
+)
 
 
 def create_datamodule(config: dict):
@@ -65,6 +69,31 @@ def create_datamodule(config: dict):
         ]
         config["output_size"] = config["num_place_cells"]
         
+    elif task == "path_integration_1d":
+        datamodule = PathIntegration1DDataModule(
+            dt=config["dt"],
+            num_time_steps=config["num_time_steps"],
+            arena_size=config["arena_size"],
+            # Place cell parameters
+            num_place_cells=config["num_place_cells"],
+            place_cell_rf=config["place_cell_rf"],
+            DoG=config.get("DoG", False),
+            surround_scale=config.get("surround_scale", 2.0),
+            place_cell_layout=config.get("place_cell_layout", "uniform"),
+            # Velocity parameters
+            velocity_mean=config.get("velocity_mean", 0.0),
+            velocity_std=config.get("velocity_std", 0.5),
+            velocity_tau=config.get("velocity_tau", 1.0),
+            # DataLoader parameters
+            num_trajectories=config["num_trajectories"],
+            batch_size=config["batch_size"],
+            num_workers=config["num_workers"],
+            train_val_split=config["train_val_split"],
+        )
+        # 1D path integration: input is scalar velocity, output is place cells
+        config["input_size"] = 1
+        config["output_size"] = config["num_place_cells"]
+
     elif task == "binary_counter":
         datamodule = HierarchicalCounterDataModule(
             n_levels=config["n_levels"],
