@@ -38,7 +38,7 @@ import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
 # Results directory (will be set with timestamp in main)
-RESULTS_BASE = Path(__file__).parent / "results" / "teacher_student_identifiability"
+RESULTS_BASE = Path(__file__).parent / "results"
 RESULTS_DIR = RESULTS_BASE  # Will be updated with timestamp
 
 
