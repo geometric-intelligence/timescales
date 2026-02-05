@@ -1,0 +1,59 @@
+# Example Teacher Configuration
+# ==============================
+#
+# Use this file to specify custom teacher dynamics discovered through
+# notebook exploration. Pass to the script with:
+#
+#   python teacher_student_identifiability.py --teacher-config configs/example_teacher.yaml
+#
+# The script will run the full sweep (activations, precondition, etc.)
+# using these fixed teacher parameters instead of random initialization.
+
+# Custom teacher dynamics (e.g., limit cycle oscillator)
+# W_rec is a list of lists (matrix), shape (num_neurons, num_neurons)
+# teacher_W:
+#   - [0, -3.54]
+#   - [3.54, 0]
+teacher_W:
+  - [0.0, 1.0]
+  - [1.0, 0.0]
+
+# Bias vector, shape (num_neurons,)
+# teacher_b: [1.83, -2.20]
+teacher_b: [0.0, 0.0]
+
+# Teacher timescales (alphas), shape (num_neurons,)
+# Values in (0, 1); larger = faster dynamics
+teacher_alphas: [0.5, 0.3]
+
+# Student timescales (different from teacher to test identifiability)
+student_alphas: [0.1, 0.8]
+
+
+# ==============================
+# Other example dynamics
+# ==============================
+
+# --- Symmetric oscillator ---
+# teacher_W:
+#   - [0, -8.85]
+#   - [8.85, 0]
+# teacher_b: [0.0, 0.0]
+# teacher_alphas: [0.5, 0.5]
+# student_alphas: [0.2, 0.8]
+
+# --- Stable fixed point with rotation ---
+# teacher_W:
+#   - [-0.5, -2.0]
+#   - [2.0, -0.5]
+# teacher_b: [0.5, -0.3]
+# teacher_alphas: [0.7, 0.4]
+# student_alphas: [0.3, 0.6]
+
+# --- Heterogeneous timescales ---
+# teacher_W:
+#   - [0.8, -0.3]
+#   - [0.5, 0.2]
+# teacher_b: [0.0, 0.0]
+# teacher_alphas: [0.9, 0.1]  # Very different timescales
+# student_alphas: [0.5, 0.5]  # Uniform timescales

@@ -15,6 +15,10 @@ __pycache__/
 /timescales/logs/checkpoints/*
 /timescales/logs/*
 
+
+# Sandbox results
+sandbox/results/
+
 # Animations
 *.mp4
 

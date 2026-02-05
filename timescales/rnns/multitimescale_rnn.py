@@ -432,8 +432,8 @@ class MultiTimescaleRNNLightning(L.LightningModule):
             total_loss: Scalar loss value
             per_channel_losses: Dict mapping channel names to per-channel losses (None for path_integration)
         """
-        if self.task == "path_integration":
-            # Cross-entropy loss for place cell prediction
+        if self.task in ("path_integration", "path_integration_1d"):
+            # Cross-entropy loss for place cell prediction (same for 1D and 2D)
             y = targets.reshape(-1, self.model.output_size)
             yhat = torch.softmax(outputs.reshape(-1, self.model.output_size), dim=-1)
             loss = -(y * torch.log(yhat + 1e-8)).sum(-1).mean()
@@ -470,7 +470,7 @@ class MultiTimescaleRNNLightning(L.LightningModule):
     def training_step(self, batch) -> torch.Tensor:
         inputs, aux_info, targets = batch
         
-        if self.task == "path_integration":
+        if self.task in ("path_integration", "path_integration_1d"):
             # Use first place cell activation for initialization
             init_context = targets[:, 0, :]
         else:
@@ -511,7 +511,7 @@ class MultiTimescaleRNNLightning(L.LightningModule):
     def validation_step(self, batch) -> torch.Tensor:
         inputs, aux_info, targets = batch
         
-        if self.task == "path_integration":
+        if self.task in ("path_integration", "path_integration_1d"):
             init_context = targets[:, 0, :]
         else:
             init_context = None
