@@ -22,6 +22,8 @@ from timescales.datamodules import (
     PathIntegrationDataModule,
     PathIntegration1DDataModule,
     HierarchicalCounterDataModule,
+    FlipFlopDataModule,
+    NullDataModule,
 )
 
 
@@ -111,6 +113,32 @@ def create_datamodule(config: dict):
         config["input_size"] = datamodule.input_size
         config["output_size"] = datamodule.output_size
         
+    elif task == "flip_flop":
+        datamodule = FlipFlopDataModule(
+            n_bits=config["n_bits"],
+            p_pulse=config["p_pulse"],
+            pulse_amplitude=config.get("pulse_amplitude", 1.0),
+            num_time_steps=config["num_time_steps"],
+            num_trajectories=config["num_trajectories"],
+            batch_size=config["batch_size"],
+            num_workers=config["num_workers"],
+            train_val_split=config["train_val_split"],
+        )
+        config["input_size"] = datamodule.input_size
+        config["output_size"] = datamodule.output_size
+
+    elif task == "null":
+        datamodule = NullDataModule(
+            input_size=config.get("input_size", 1),
+            num_time_steps=config["num_time_steps"],
+            num_trajectories=config["num_trajectories"],
+            batch_size=config["batch_size"],
+            num_workers=config["num_workers"],
+            train_val_split=config["train_val_split"],
+        )
+        config["input_size"] = datamodule.input_size
+        config["output_size"] = datamodule.output_size
+
     else:
         raise ValueError(f"Unknown task: {task}")
     
@@ -135,13 +163,19 @@ def create_multitimescale_rnn_model(
         hidden_size=config["hidden_size"],
         output_size=config["output_size"],
         dt=config["dt"],
-        timescales_config=config.get("timescales_config"),  # Can be None if learning
+        timescales_config=config.get("timescales_config"),  # None is valid when learn_timescales=True
         activation=getattr(nn, config["activation"]),
         learn_timescales=learn_timescales,
-        init_timescale=config.get("init_timescale"),  # Uniform init if provided
-        shared_timescale=config.get("shared_timescale", False),  # Single shared τ for all neurons
-        normalize_hidden=config.get("normalize_hidden", False),
-        zero_diag_wrec=config.get("zero_diag_wrec", True),
+        init_timescale=config.get("init_timescale"),  # None means random init
+        shared_timescale=config["shared_timescale"],
+        normalize_hidden=config["normalize_hidden"],
+        zero_diag_wrec=config["zero_diag_wrec"],
+        recurrent_gain=config["recurrent_gain"],
+        noise_std=config["noise_std"],
+        wrec_init=config["wrec_init"],
+        alpha_parameterization=config["alpha_parameterization"],
+        stability_param=config.get("stability_param", 2.0),  # only used when wrec_init="levy_stable"
+        dynamics_type=config["dynamics_type"],
     )
 
     lightning_module = MultiTimescaleRNNLightning(
@@ -368,23 +402,24 @@ def single_seed(config: dict) -> dict:
         strategy=strategy,
     )
 
-    print("Trainer initialized")
-    print("Training...")
-
-    #TODO: Add optimizer options (Adam, SGD, etc.; currently only Adam is supported)
-    trainer.fit(lightning_module, train_loader, val_loader)
-
-    print("Training complete!")
-
-    # Get final validation loss
+    skip_training = config.get("skip_training", False)
     final_val_loss = None
-    if (
-        hasattr(lightning_module, "trainer")
-        and lightning_module.trainer.callback_metrics
-    ):
-        final_val_loss = lightning_module.trainer.callback_metrics.get("val_loss", None)
-        if final_val_loss is not None:
-            final_val_loss = float(final_val_loss)
+
+    if skip_training:
+        print("skip_training=True — saving random (untrained) network only.")
+    else:
+        print("Trainer initialized")
+        print("Training...")
+        trainer.fit(lightning_module, train_loader, val_loader)
+        print("Training complete!")
+
+        if (
+            hasattr(lightning_module, "trainer")
+            and lightning_module.trainer.callback_metrics
+        ):
+            final_val_loss = lightning_module.trainer.callback_metrics.get("val_loss", None)
+            if final_val_loss is not None:
+                final_val_loss = float(final_val_loss)
 
     # Save artifacts
     @rank_zero_only

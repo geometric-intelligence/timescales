@@ -34,6 +34,12 @@ learn_timescales: true
 init_timescale: 0.5            # Initial timescale for learnable mode
 normalize_hidden: false
 zero_diag_wrec: true
+shared_timescale: false
+recurrent_gain: 1.0
+noise_std: 0.0
+wrec_init: "orthogonal"
+alpha_parameterization: "exponential"
+dynamics_type: "rate"
 
 # Training parameters
 learning_rate: 0.001
