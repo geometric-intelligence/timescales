@@ -1,6 +1,8 @@
+import numpy as np
 import torch
 import torch.nn as nn
 import lightning as L
+from scipy.stats import levy_stable
 
 
 class MultiTimescaleRNNStep(nn.Module):
@@ -20,6 +22,10 @@ class MultiTimescaleRNNStep(nn.Module):
         shared_timescale: bool = False,
         normalize_hidden: bool = False,
         zero_diag_wrec: bool = True,
+        recurrent_gain: float = 1.0,
+        noise_std: float = 0.0,
+        alpha_parameterization: str = "exponential",
+        dynamics_type: str = "rate",
     ) -> None:
         """
         Initialize the Multi-timescale RNN step.
@@ -38,6 +44,15 @@ class MultiTimescaleRNNStep(nn.Module):
                                 for all neurons instead of per-neuron timescales.
         :param normalize_hidden: If True, apply LayerNorm to hidden state after each step.
         :param zero_diag_wrec: If True, enforce diag(W_rec) = 0 (no self-connections).
+        :param recurrent_gain: Multiplicative gain applied to W_rec output in the forward pass.
+        :param noise_std: Standard deviation of Gaussian noise injected at each step.
+                         Scaled by sqrt(dt/tau) per unit for consistent OU-process noise.
+        :param alpha_parameterization: How alpha is computed from dt and tau.
+                         "exponential": alpha = 1 - exp(-dt/tau)  (exact discretization)
+                         "linear":      alpha = dt/tau             (first-order Euler)
+        :param dynamics_type: Which ODE formulation to discretize.
+                         "rate":    tau*dr/dt = -r + phi(g*W*r + W_in*u)   (rate-based)
+                         "voltage": tau*dx/dt = -x + g*W*phi(x) + W_in*u  (voltage-based)
         """
         super().__init__()
         self.input_size = input_size
@@ -48,12 +63,18 @@ class MultiTimescaleRNNStep(nn.Module):
         self.shared_timescale = shared_timescale
         self.normalize_hidden = normalize_hidden
         self.zero_diag_wrec = zero_diag_wrec
+        self.recurrent_gain = recurrent_gain
+        self.noise_std = noise_std
+        self.alpha_parameterization = alpha_parameterization
+        self.dynamics_type = dynamics_type
 
         # Optional LayerNorm for hidden state normalization
         if normalize_hidden:
             self.layer_norm = nn.LayerNorm(hidden_size)
         else:
             self.layer_norm = None
+
+        self.register_buffer("_dt_val", torch.tensor(dt))
 
         if learn_timescales:
             # Learnable timescales via log-parameterization
@@ -75,14 +96,12 @@ class MultiTimescaleRNNStep(nn.Module):
                     log_timescales = torch.randn(hidden_size) * 0.5 - 0.5
             
             self.log_timescales = nn.Parameter(log_timescales)
-            # Register dt as buffer for alpha computation
-            self.register_buffer("_dt", torch.tensor(dt))
         else:
             # Fixed timescales (original behavior)
             if timescales is None:
                 raise ValueError("timescales must be provided when learn_timescales=False")
             self.register_buffer("timescales", timescales)
-            alphas = 1 - torch.exp(-dt / timescales)
+            alphas = self._compute_alpha(dt, timescales)
             self.register_buffer("alphas", alphas)
 
         self.W_in = nn.Linear(input_size, hidden_size)
@@ -92,6 +111,15 @@ class MultiTimescaleRNNStep(nn.Module):
         if zero_diag_wrec:
             self.W_rec.weight.data.fill_diagonal_(0)
             self.W_rec.weight.register_hook(lambda g: g.clone().fill_diagonal_(0))
+
+    def _compute_alpha(self, dt, timescales):
+        """Compute alpha from dt and timescales using the configured parameterization."""
+        if self.alpha_parameterization == "exponential":
+            return 1 - torch.exp(-dt / timescales)
+        elif self.alpha_parameterization == "linear":
+            return dt / timescales
+        else:
+            raise ValueError(f"Unknown alpha_parameterization: {self.alpha_parameterization}")
 
     @property
     def current_timescales(self) -> torch.Tensor:
@@ -114,13 +142,30 @@ class MultiTimescaleRNNStep(nn.Module):
         """
         if self.learn_timescales:
             timescales = torch.exp(self.log_timescales)
-            alphas = 1 - torch.exp(-self._dt / timescales)
-            # Expand shared timescale to hidden_size for broadcasting
+            alphas = self._compute_alpha(self._dt_val, timescales)
             if self.shared_timescale:
                 alphas = alphas.expand(self.hidden_size)
             return alphas
         else:
             return self.alphas
+
+    def _sample_noise(self, hidden: torch.Tensor) -> torch.Tensor:
+        """
+        Sample tau-normalized OU noise consistent with the alpha discretization.
+
+        Convention: stationary variance = sigma^2/2, independent of tau.
+          linear (Euler-Maruyama): scale = sigma * sqrt(dt / tau)
+          exponential (exact OU):  scale = sigma * sqrt(tau/2 * (1 - exp(-2*dt/tau)))
+        """
+        timescales = self.current_timescales
+        dt = self._dt_val
+        if self.alpha_parameterization == "linear":
+            noise_scale = self.noise_std * torch.sqrt(dt / timescales)
+        else:
+            noise_scale = self.noise_std * torch.sqrt(
+                timescales / 2 * (1 - torch.exp(-2 * dt / timescales))
+            )
+        return torch.randn_like(hidden) * noise_scale
 
     def forward(
         self,
@@ -134,16 +179,23 @@ class MultiTimescaleRNNStep(nn.Module):
         :param hidden: (batch, hidden_size)
         :return: new_hidden: (batch, hidden_size)
         """
-        pre_activation = self.W_in(input) + self.W_rec(hidden)
-        activated = self.activation(pre_activation)
-
-        # Get alphas (either fixed or computed from learned log_timescales)
         alphas = self.current_alphas
 
-        # Per-unit leaky integration: h_new = (1-α)*h_old + α*activated
-        new_hidden = (1 - alphas) * hidden + alphas * activated
+        if self.dynamics_type == "rate":
+            # tau*dr/dt = -r + phi(g*W*r + W_in*u)
+            pre_activation = self.recurrent_gain * self.W_rec(hidden) + self.W_in(input)
+            drive = self.activation(pre_activation)
+        elif self.dynamics_type == "voltage":
+            # tau*dx/dt = -x + g*W*phi(x) + W_in*u
+            drive = self.recurrent_gain * self.W_rec(self.activation(hidden)) + self.W_in(input)
+        else:
+            raise ValueError(f"Unknown dynamics_type: {self.dynamics_type}")
 
-        # Optional LayerNorm
+        new_hidden = (1 - alphas) * hidden + alphas * drive
+
+        if self.noise_std > 0.0 and self.training:
+            new_hidden = new_hidden + self._sample_noise(new_hidden)
+
         if self.layer_norm is not None:
             new_hidden = self.layer_norm(new_hidden)
 
@@ -168,6 +220,12 @@ class MultiTimescaleRNN(nn.Module):
         shared_timescale: bool = False,
         normalize_hidden: bool = False,
         zero_diag_wrec: bool = False,
+        recurrent_gain: float = 1.0,
+        noise_std: float = 0.0,
+        wrec_init: str = "orthogonal",
+        alpha_parameterization: str = "exponential",
+        stability_param: float = 2.0,
+        dynamics_type: str = "rate",
     ) -> None:
         """
         Initialize the Multi-timescale RNN.
@@ -187,6 +245,23 @@ class MultiTimescaleRNN(nn.Module):
                                 timescale for all neurons instead of per-neuron timescales.
         :param normalize_hidden: If True, apply LayerNorm to hidden state after each step.
         :param zero_diag_wrec: If True, enforce diag(W_rec) = 0 (no self-connections).
+        :param recurrent_gain: Multiplicative gain on recurrent weights in forward pass.
+        :param noise_std: Std of injected Gaussian noise per step (0 = no noise).
+        :param wrec_init: Initialization scheme for W_rec.
+                         "orthogonal": orthogonal initialization.
+                         "normal_scaled": N(0, 1/N) entries (Sompolinsky et al. 1988).
+                         "levy_stable": alpha-stable (Levy) distribution with
+                             beta=0, loc=0, scale=1/sqrt(N). The stability exponent
+                             is set via stability_param.
+                         "lognormal": |W_ij| ~ LogNormal(0, 1) with random ±1 signs,
+                             scaled by 1/sqrt(N).
+        :param alpha_parameterization: "exponential" for 1-exp(-dt/tau), "linear" for dt/tau.
+        :param stability_param: Stability exponent for the Levy-stable distribution
+                               (only used when wrec_init="levy_stable"). Must be in (0, 2].
+                               2.0 = Gaussian, 1.0 = Cauchy, <2 = heavy-tailed.
+        :param dynamics_type: ODE formulation to discretize.
+                         "rate":    tau*dr/dt = -r + phi(g*W*r + W_in*u)   (rate-based)
+                         "voltage": tau*dx/dt = -x + g*W*phi(x) + W_in*u  (voltage-based)
         """
         super().__init__()
         self.input_size = input_size
@@ -198,6 +273,8 @@ class MultiTimescaleRNN(nn.Module):
         self.shared_timescale = shared_timescale
         self.normalize_hidden = normalize_hidden
         self.zero_diag_wrec = zero_diag_wrec
+        self.stability_param = stability_param
+        self.wrec_init = wrec_init
 
         if learn_timescales:
             # Timescales are learned
@@ -225,6 +302,10 @@ class MultiTimescaleRNN(nn.Module):
             shared_timescale=shared_timescale,
             normalize_hidden=normalize_hidden,
             zero_diag_wrec=zero_diag_wrec,
+            recurrent_gain=recurrent_gain,
+            noise_std=noise_std,
+            alpha_parameterization=alpha_parameterization,
+            dynamics_type=dynamics_type,
         )
         self.W_out = nn.Linear(hidden_size, output_size, bias=False)
 
@@ -344,19 +425,39 @@ class MultiTimescaleRNN(nn.Module):
         return torch.stack(hidden_states, dim=1), torch.stack(outputs, dim=1)
 
     def _initialize_weights(self) -> None:
-        """Initialize weights for stable RNN training"""
-        # 1. Input weights (W_in) - Xavier initialization
+        """Initialize weights for RNN training."""
         nn.init.xavier_uniform_(self.rnn_step.W_in.weight)
         nn.init.zeros_(self.rnn_step.W_in.bias)
 
-        # 2. Recurrent weights (W_rec) - Orthogonal initialization
-        nn.init.orthogonal_(self.rnn_step.W_rec.weight)
+        n = self.hidden_size
+        if self.wrec_init == "orthogonal":
+            nn.init.orthogonal_(self.rnn_step.W_rec.weight)
+        elif self.wrec_init == "normal_scaled":
+            # W_ij ~ N(0, 1/N) — Sompolinsky et al. 1988
+            nn.init.normal_(self.rnn_step.W_rec.weight, mean=0.0, std=1.0 / n**0.5)
+        elif self.wrec_init == "levy_stable":
+            # W_ij ~ S(stability_param, beta=0, loc=0, scale=1/sqrt(N))
+            samples = levy_stable.rvs(
+                alpha=self.stability_param,
+                beta=0,
+                loc=0,
+                scale=1.0 / n**0.5,
+                size=(n, n),
+            )
+            with torch.no_grad():
+                self.rnn_step.W_rec.weight.copy_(torch.tensor(samples, dtype=torch.float32))
+        elif self.wrec_init == "lognormal":
+            # |W_ij| ~ LogNormal(0, 1), sign ±1 with equal probability, scaled by 1/sqrt(N)
+            magnitudes = np.random.lognormal(mean=0.0, sigma=1.0, size=(n, n))
+            signs = np.random.choice([-1.0, 1.0], size=(n, n))
+            samples = signs * magnitudes / n**0.5
+            with torch.no_grad():
+                self.rnn_step.W_rec.weight.copy_(torch.tensor(samples, dtype=torch.float32))
+        else:
+            raise ValueError(f"Unknown wrec_init: {self.wrec_init}")
         nn.init.zeros_(self.rnn_step.W_rec.bias)
 
-        # 3. Output weights (W_out) - Xavier initialization
         nn.init.xavier_uniform_(self.W_out.weight)
-
-        # 4. Initial hidden state encoder (W_h_init) - Xavier initialization
         nn.init.xavier_uniform_(self.W_h_init.weight)
 
     def get_timescale_stats(self) -> dict:
@@ -416,8 +517,8 @@ class MultiTimescaleRNNLightning(L.LightningModule):
         self.eps_alpha = eps_alpha
         
         # Task-specific loss function
-        if task == "binary_counter":
-            self.loss_fn = nn.BCEWithLogitsLoss(reduction='none')  # Use 'none' to compute per-sample losses
+        if task in ("binary_counter", "flip_flop"):
+            self.loss_fn = nn.BCEWithLogitsLoss(reduction='none')
 
         if precondition_gradients:
             print(f"Gradient preconditioning ENABLED (eps_alpha={eps_alpha})")
@@ -438,31 +539,23 @@ class MultiTimescaleRNNLightning(L.LightningModule):
             yhat = torch.softmax(outputs.reshape(-1, self.model.output_size), dim=-1)
             loss = -(y * torch.log(yhat + 1e-8)).sum(-1).mean()
             return loss, None
-        elif self.task == "binary_counter":
+        elif self.task in ("binary_counter", "flip_flop"):
             # BCE loss for binary state prediction
-            # outputs: (batch, seq_len, n_levels)
-            # targets: (batch, seq_len, n_levels)
-            batch_size, seq_len, n_levels = outputs.shape
-            
-            # Reshape to (batch * seq_len, n_levels)
-            outputs_flat = outputs.reshape(-1, n_levels)
-            targets_flat = targets.reshape(-1, n_levels)
-            
-            # Compute per-sample, per-channel loss: (batch * seq_len, n_levels)
+            batch_size, seq_len, n_channels = outputs.shape
+
+            outputs_flat = outputs.reshape(-1, n_channels)
+            targets_flat = targets.reshape(-1, n_channels)
+
             per_sample_loss = self.loss_fn(outputs_flat, targets_flat)
-            
-            # Average across samples and time steps, keep channel dimension: (n_levels,)
+
             per_channel_loss = per_sample_loss.mean(dim=0)
-            
-            # Total loss: average across all channels
             total_loss = per_channel_loss.mean()
-            
-            # Create dict for logging
+
             per_channel_dict = {
                 f"channel_{i}": per_channel_loss[i].item()
-                for i in range(n_levels)
+                for i in range(n_channels)
             }
-            
+
             return total_loss, per_channel_dict
         else:
             raise ValueError(f"Unknown task: {self.task}")

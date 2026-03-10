@@ -17,7 +17,7 @@ __pycache__/
 
 
 # Sandbox results
-sandbox/results/
+sandbox/**/results/
 
 # Animations
 *.mp4

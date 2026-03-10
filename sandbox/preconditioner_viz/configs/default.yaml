@@ -1,0 +1,64 @@
+# Preconditioner Visualization - Default Configuration
+# =====================================================
+#
+# Run with:
+#   python run.py --config configs/default.yaml
+#
+# Or modify parameters inline:
+#   python run.py --config configs/default.yaml --n_steps 10000
+
+
+# =============================================================================
+# Timescales
+# =============================================================================
+
+alpha_fast: 0.9   # Fast neuron update rate (try 0.95 for more extreme)
+alpha_slow: 0.1   # Slow neuron update rate (try 0.05 for more extreme)
+
+
+# =============================================================================
+# Teacher Network (Target)
+# =============================================================================
+
+w12_teacher: 1.0  # Weight into fast neuron
+w21_teacher: 0.5  # Weight into slow neuron
+
+
+# =============================================================================
+# RNN Dynamics
+# =============================================================================
+
+rollout_length: 20              # Timesteps to unroll (try 50-100 for harder problem)
+initial_state: [0.5, -0.3]      # Hidden state initialization for loss computation
+
+
+# =============================================================================
+# Optimization
+# =============================================================================
+
+n_steps: 5000         # Number of gradient descent steps
+learning_rate: 0.05   # Step size
+
+
+# =============================================================================
+# Multiple Trajectories
+# =============================================================================
+
+n_trajectories: 8                 # Number of random starting points
+init_range: [-0.5, 1.5]           # Range for initial weight sampling
+
+
+# =============================================================================
+# Visualization
+# =============================================================================
+
+grid_resolution: 15               # Grid points for loss landscape (higher = smoother)
+w12_range: [-0.5, 2.0]            # x-axis range for plots
+w21_range: [-0.5, 1.5]            # y-axis range for plots
+
+
+# =============================================================================
+# Reproducibility
+# =============================================================================
+
+seed: 42

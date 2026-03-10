@@ -12,6 +12,12 @@ hidden_size: 512 #4096
 activation: "ReLU" #"Tanh"
 normalize_hidden: false  # If true, apply LayerNorm to hidden state after each step
 zero_diag_wrec: true    # If true, enforce diag(W_rec) = 0 (no self-connections)
+shared_timescale: false  # If true, use a single shared timescale for all neurons
+recurrent_gain: 1.0      # Multiplicative gain on recurrent weights
+noise_std: 0.0           # Std of Gaussian noise injected per step (0 = none)
+wrec_init: "orthogonal"  # W_rec init: "orthogonal" or "normal_scaled" (N(0,1/N)) or "levy_stable"
+alpha_parameterization: "exponential"  # "exponential" = 1-exp(-dt/tau), "linear" = dt/tau
+dynamics_type: "rate"    # "rate" = phi(gWr + u), "voltage" = gW*phi(x) + u
 
 # Timescales configuration
 # Option 1: Fixed timescales (default) - set learn_timescales: false
