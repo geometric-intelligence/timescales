@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 import torch.nn as nn
 import lightning as L
@@ -252,6 +253,8 @@ class MultiTimescaleRNN(nn.Module):
                          "levy_stable": alpha-stable (Levy) distribution with
                              beta=0, loc=0, scale=1/sqrt(N). The stability exponent
                              is set via stability_param.
+                         "lognormal": |W_ij| ~ LogNormal(0, 1) with random ±1 signs,
+                             scaled by 1/sqrt(N).
         :param alpha_parameterization: "exponential" for 1-exp(-dt/tau), "linear" for dt/tau.
         :param stability_param: Stability exponent for the Levy-stable distribution
                                (only used when wrec_init="levy_stable"). Must be in (0, 2].
@@ -441,6 +444,13 @@ class MultiTimescaleRNN(nn.Module):
                 scale=1.0 / n**0.5,
                 size=(n, n),
             )
+            with torch.no_grad():
+                self.rnn_step.W_rec.weight.copy_(torch.tensor(samples, dtype=torch.float32))
+        elif self.wrec_init == "lognormal":
+            # |W_ij| ~ LogNormal(0, 1), sign ±1 with equal probability, scaled by 1/sqrt(N)
+            magnitudes = np.random.lognormal(mean=0.0, sigma=1.0, size=(n, n))
+            signs = np.random.choice([-1.0, 1.0], size=(n, n))
+            samples = signs * magnitudes / n**0.5
             with torch.no_grad():
                 self.rnn_step.W_rec.weight.copy_(torch.tensor(samples, dtype=torch.float32))
         else:

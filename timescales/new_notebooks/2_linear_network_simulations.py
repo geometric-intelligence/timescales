@@ -161,16 +161,16 @@ print("Analysis helpers defined.")
 # %%
 # --- Sweep helper ---
 
-def _fit_sweep_timescales(act, proj, stab_idx, N, dt, max_lag=100):
+def _fit_sweep_timescales(act, proj, stab_idx, N, dt, max_lag=100, fit_range=(1, 30)):
     """Fit exp timescales for all neurons + stable eigenmodes. Returns (tau_neu, tau_mode, valid_neu, valid_mode)."""
     tau_neu = np.full(N, np.nan)
     for i in range(N):
         acf, _ = compute_autocorrelation(act[:, i], max_lag)
-        tau_neu[i] = fit_exponential_timescale(acf, dt, fit_range=(1, 30))
+        tau_neu[i] = fit_exponential_timescale(acf, dt, fit_range=fit_range)
     tau_mode = np.full(len(stab_idx), np.nan)
     for j, midx in enumerate(stab_idx):
         acf, _ = compute_autocorrelation(proj[:, midx], max_lag)
-        tau_mode[j] = fit_exponential_timescale(acf, dt, fit_range=(1, 30))
+        tau_mode[j] = fit_exponential_timescale(acf, dt, fit_range=fit_range)
     valid_neu  = np.isfinite(tau_neu)  & (tau_neu  > 0)
     valid_mode = np.isfinite(tau_mode) & (tau_mode > 0)
     return tau_neu, tau_mode, valid_neu, valid_mode
@@ -251,6 +251,8 @@ sim_config = {
     "dt":        0.1,
     "duration":  5000.0,
     "noise_std": 0.005,
+    "max_lag":   100,
+    "fit_range": (1, 30),
 }
 
 
@@ -294,19 +296,20 @@ print(f"Projections shape: {projections.shape}")
 
 
 # %%
-max_lag = 100
+max_lag   = sim_config["max_lag"]
+fit_range = sim_config["fit_range"]
 
 print("Fitting neuron timescales...")
 tau_neuron_fitted = np.full(n_neurons, np.nan)
 for i in range(n_neurons):
     acf, _ = compute_autocorrelation(activity_steady[:, i], max_lag)
-    tau_neuron_fitted[i] = fit_exponential_timescale(acf, dt_sim, fit_range=(1, 30))
+    tau_neuron_fitted[i] = fit_exponential_timescale(acf, dt_sim, fit_range=fit_range)
 
 print("Fitting eigenmode timescales...")
 tau_mode_fitted = np.full(len(stable_indices), np.nan)
 for j, mode_idx in enumerate(stable_indices):
     acf, _ = compute_autocorrelation(projections[:, mode_idx], max_lag)
-    tau_mode_fitted[j] = fit_exponential_timescale(acf, dt_sim, fit_range=(1, 30))
+    tau_mode_fitted[j] = fit_exponential_timescale(acf, dt_sim, fit_range=fit_range)
 
 valid_neuron = np.isfinite(tau_neuron_fitted) & (tau_neuron_fitted > 0)
 valid_mode   = np.isfinite(tau_mode_fitted)   & (tau_mode_fitted   > 0)
@@ -545,6 +548,8 @@ g_sweep_config = {
     "dt":        0.1,
     "duration":  5000.0,
     "noise_std": 0.005,
+    "max_lag":   100,
+    "fit_range": (1, 30),
 }
 
 torch.manual_seed(1)
@@ -582,6 +587,7 @@ for g in g_sweep_config["g_values"]:
     print("  Fitting timescales ...")
     tau_neu_gs, tau_mode_gs, valid_neu_gs, valid_mode_gs = _fit_sweep_timescales(
         act_gs, proj_gs, stab_idx_gs, N_gs, dt_gs,
+        max_lag=g_sweep_config["max_lag"], fit_range=g_sweep_config["fit_range"],
     )
     print(f"  Valid neuron: {valid_neu_gs.sum()}/{N_gs}, eigenmode: {valid_mode_gs.sum()}/{len(stab_idx_gs)}")
 
@@ -623,6 +629,8 @@ alpha_sweep_config = {
     "dt":           0.1,
     "duration":     5000.0,
     "noise_std":    0.005,
+    "max_lag":      100,
+    "fit_range":    (1, 30),
     # Choose normalization:
     #   "rnn"    → scale = 1/sqrt(N)    matches MultiTimescaleRNN levy_stable init
     #   "stable" → scale = 1/N^(1/alpha) spectral radius ~O(1), eigenspectra comparable
@@ -670,6 +678,7 @@ for alpha_s in alpha_sweep_config["alpha_values"]:
     print("  Fitting timescales ...")
     tau_neu_as, tau_mode_as, valid_neu_as, valid_mode_as = _fit_sweep_timescales(
         act_as, proj_as, stab_idx_as, N_as, dt_as,
+        max_lag=alpha_sweep_config["max_lag"], fit_range=alpha_sweep_config["fit_range"],
     )
     print(f"  Valid neuron: {valid_neu_as.sum()}/{N_as}, eigenmode: {valid_mode_as.sum()}/{len(stab_idx_as)}")
 
