@@ -93,19 +93,18 @@ def generate_W_levy(
     normalization="rnn"    → scale = 1/sqrt(N)
                              Matches MultiTimescaleRNN wrec_init='levy_stable'.
                              Spectral radius grows as N^(1/alpha-1/2) for alpha < 2.
-    normalization="stable" → scale = 1/N^(1/alpha)
+    normalization="stable" → scale = 1/N^(1/alpha), with √2 correction at alpha=2
+                             so that the Gaussian limit gives exactly N(0, 1/N).
                              Canonical for alpha-stable random matrices.
                              Spectral radius stays ~O(1) across all alpha.
-                             Note: at alpha=2 this gives N(0, 2/N), not N(0, 1/N).
     """
     if normalization == "rnn":
         scale = 1.0 / n_neurons ** 0.5
     elif normalization == "stable":
+        scale = 1.0 / n_neurons ** (1.0 / alpha_stab)
         if alpha_stab == 2.0:
-        # levy_stable(alpha=2) gives N(0, 2·scale²); use 1/sqrt(2N) to get N(0, 1/N)
-            scale = 1.0 /(2 * n_neurons ** 0.5)
-        else:
-            scale = 1.0 / n_neurons ** (1.0 / alpha_stab)
+            # levy_stable(alpha=2, scale=σ) ~ N(0, 2σ²); divide by √2 so variance = 1/N
+            scale /= 2.0 ** 0.5
     else:
         raise ValueError(f"Unknown normalization: {normalization!r}. Use 'rnn' or 'stable'.")
     return levy_stable.rvs(
