@@ -27,8 +27,11 @@ hidden_size: 256
 activation: "Tanh"
 
 # Timescale configuration
-learn_timescales: true
-init_timescale: 0.5
+learn_timescales: false
+# init_timescale: 0.5 only used for learn_timescales: true
+timescales_config:
+  type: "discrete"
+  values: [0.5]
 shared_timescale: false
 normalize_hidden: false
 zero_diag_wrec: true
@@ -38,19 +41,18 @@ wrec_init: "orthogonal"
 alpha_parameterization: "exponential"
 dynamics_type: "rate"
 
-# Training parameters
+# Training parameters (step-based: fresh data generated every step)
 learning_rate: 0.001
 weight_decay: 0.0001
-step_size: 100
+max_steps: 1500
+val_every_n_steps: 10            # validate every N training steps
+lr_step_size: 1000               # decay LR every N training steps
 gamma: 0.5
-max_epochs: 2000
-num_trajectories: 10000
 batch_size: 200
+num_val_trajectories: 2000
 num_workers: 4
-train_val_split: 0.8
 
 # Logging
-log_every_n_epochs: 5
-viz_log_every_n_epochs: 100
+viz_log_every_n_steps: 500
 grad_log_every_n_steps: 100
 grad_track_per_weight_matrix: true

@@ -14,25 +14,34 @@ class LossLoggerCallback(L.Callback):
     def __init__(self, save_dir: str):
         self.save_dir = save_dir
 
-        self.train_losses_epoch: list[float] = []
-        self.val_losses_epoch: list[float] = []
-        self.epochs: list[int] = []
+        self.train_losses: list[float] = []
+        self.val_losses: list[float] = []
+        self.train_accuracies: list[float] = []
+        self.val_accuracies: list[float] = []
+        self.steps: list[int] = []
 
     def on_train_epoch_end(self, trainer, pl_module):
         train_loss = trainer.logged_metrics.get("train_loss_epoch", None)
         if train_loss is not None:
-            self.train_losses_epoch.append(float(train_loss))
+            self.train_losses.append(float(train_loss))
+
+        train_acc = trainer.logged_metrics.get("train_accuracy_epoch", None)
+        if train_acc is not None:
+            self.train_accuracies.append(float(train_acc))
 
     def on_validation_epoch_end(self, trainer, pl_module):
 
         if trainer.sanity_checking:
-            print("Sanity checking, skipping validation loss logging")
             return
 
         val_loss = trainer.logged_metrics.get("val_loss", None)
         if val_loss is not None:
-            self.val_losses_epoch.append(float(val_loss))
-            self.epochs.append(trainer.current_epoch)
+            self.val_losses.append(float(val_loss))
+            self.steps.append(trainer.global_step)
+
+        val_acc = trainer.logged_metrics.get("val_accuracy", None)
+        if val_acc is not None:
+            self.val_accuracies.append(float(val_acc))
 
         self._save_losses()
 
@@ -41,9 +50,11 @@ class LossLoggerCallback(L.Callback):
         os.makedirs(self.save_dir, exist_ok=True)
 
         loss_data = {
-            "epochs": self.epochs,
-            "train_losses_epoch": self.train_losses_epoch,
-            "val_losses_epoch": self.val_losses_epoch,
+            "steps": self.steps,
+            "train_losses": self.train_losses,
+            "val_losses": self.val_losses,
+            "train_accuracies": self.train_accuracies,
+            "val_accuracies": self.val_accuracies,
         }
 
         with open(os.path.join(self.save_dir, "training_losses.json"), "w") as f:

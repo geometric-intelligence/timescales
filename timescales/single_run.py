@@ -24,6 +24,7 @@ from timescales.datamodules import (
     HierarchicalCounterDataModule,
     FlipFlopDataModule,
     NullDataModule,
+    TeacherStudentDataModule,
 )
 
 
@@ -119,10 +120,31 @@ def create_datamodule(config: dict):
             p_pulse=config["p_pulse"],
             pulse_amplitude=config.get("pulse_amplitude", 1.0),
             num_time_steps=config["num_time_steps"],
-            num_trajectories=config["num_trajectories"],
+            num_val_trajectories=config.get("num_val_trajectories", 2000),
             batch_size=config["batch_size"],
             num_workers=config["num_workers"],
-            train_val_split=config["train_val_split"],
+        )
+        config["input_size"] = datamodule.input_size
+        config["output_size"] = datamodule.output_size
+
+    elif task == "teacher_student":
+        datamodule = TeacherStudentDataModule(
+            teacher_hidden_size=config["teacher_hidden_size"],
+            teacher_recurrent_gain=config["teacher_recurrent_gain"],
+            teacher_timescale=config["teacher_timescale"],
+            teacher_activation=config.get("teacher_activation", "Tanh"),
+            teacher_wrec_init=config.get("teacher_wrec_init", "normal_scaled"),
+            teacher_seed=config.get("teacher_seed", 42),
+            input_dim=config.get("input_dim", 2),
+            output_dim=config.get("output_dim", 2),
+            num_time_steps=config["num_time_steps"],
+            dt=config["dt"],
+            num_sequences=config.get("num_sequences", 500),
+            train_val_split=config.get("train_val_split", 0.8),
+            savgol_window=config.get("savgol_window", 5),
+            savgol_polyorder=config.get("savgol_polyorder", 2),
+            batch_size=config["batch_size"],
+            num_workers=config["num_workers"],
         )
         config["input_size"] = datamodule.input_size
         config["output_size"] = datamodule.output_size
@@ -178,15 +200,25 @@ def create_multitimescale_rnn_model(
         dynamics_type=config["dynamics_type"],
     )
 
+    # Step-based training uses lr_step_size (in training steps) with interval="step".
+    # Epoch-based training uses step_size (in epochs) with interval="epoch".
+    if "max_steps" in config:
+        lr_step_size = config.get("lr_step_size", 1000)
+        lr_interval = "step"
+    else:
+        lr_step_size = config["step_size"]
+        lr_interval = "epoch"
+
     lightning_module = MultiTimescaleRNNLightning(
         model=model,
         learning_rate=config["learning_rate"],
         weight_decay=config["weight_decay"],
-        step_size=config["step_size"],
+        step_size=lr_step_size,
         gamma=config["gamma"],
         task=config.get("task", "path_integration"),
         precondition_gradients=config.get("precondition_gradients", False),
         eps_alpha=config.get("eps_alpha", 1e-2),
+        lr_interval=lr_interval,
     )
 
     return model, lightning_module
@@ -361,9 +393,18 @@ def single_seed(config: dict) -> dict:
         print(f"Periodic checkpoints enabled: saving every {checkpoint_every_n} epochs")
 
     if model_type == "multitimescale":
+        # In step-based mode, each "epoch" = val_every_n_steps training steps.
+        # Convert viz_log_every_n_steps to the equivalent number of internal epochs.
+        if "max_steps" in config:
+            val_every = config.get("val_every_n_steps", 50)
+            viz_every_steps = config.get("viz_log_every_n_steps", 500)
+            viz_every_epochs = max(1, viz_every_steps // val_every)
+        else:
+            viz_every_epochs = config.get("viz_log_every_n_epochs", 10)
+
         timescale_viz_callback = TimescaleVisualizationCallback(
             save_dir=run_dir,
-            log_every_n_epochs=config.get("viz_log_every_n_epochs", 10),
+            log_every_n_epochs=viz_every_epochs,
             behavioral_timescale_mean=config.get("behavioral_timescale_mean"),
             behavioral_timescale_std=config.get("behavioral_timescale_std"),
         )
@@ -392,15 +433,34 @@ def single_seed(config: dict) -> dict:
         # Multi-GPU with find_unused_parameters for tasks that don't use all params
         strategy = "ddp_find_unused_parameters_true"
     
-    trainer = Trainer(
-        logger=wandb_logger,
-        max_epochs=config["max_epochs"],
-        default_root_dir=log_dir,
-        callbacks=callbacks,
-        devices=devices,
-        accelerator=accelerator,
-        strategy=strategy,
-    )
+    # Step-based training: max_steps + val_every_n_steps define training length.
+    # We use limit_train_batches to create "epochs" of val_every_n_steps steps each,
+    # so Lightning's epoch-based callbacks (checkpointing, logging) fire at each
+    # validation boundary.
+    if "max_steps" in config:
+        val_every = config.get("val_every_n_steps", 50)
+        max_steps = config["max_steps"]
+        max_epochs = (max_steps + val_every - 1) // val_every
+        trainer = Trainer(
+            logger=wandb_logger,
+            max_epochs=max_epochs,
+            limit_train_batches=val_every,
+            default_root_dir=log_dir,
+            callbacks=callbacks,
+            devices=devices,
+            accelerator=accelerator,
+            strategy=strategy,
+        )
+    else:
+        trainer = Trainer(
+            logger=wandb_logger,
+            max_epochs=config["max_epochs"],
+            default_root_dir=log_dir,
+            callbacks=callbacks,
+            devices=devices,
+            accelerator=accelerator,
+            strategy=strategy,
+        )
 
     skip_training = config.get("skip_training", False)
     final_val_loss = None
