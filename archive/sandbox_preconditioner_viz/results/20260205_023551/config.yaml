@@ -1,0 +1,22 @@
+alpha_fast: 0.9
+alpha_slow: 0.1
+w12_teacher: 1.0
+w21_teacher: 0.5
+rollout_length: 20
+initial_state:
+- 0.5
+- -0.3
+n_steps: 5000
+learning_rate: 0.05
+n_trajectories: 8
+init_range:
+- -0.5
+- 1.5
+grid_resolution: 15
+w12_range:
+- -0.5
+- 2.0
+w21_range:
+- -0.5
+- 1.5
+seed: 42
