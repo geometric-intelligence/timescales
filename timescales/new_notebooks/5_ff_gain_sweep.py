@@ -533,6 +533,49 @@ if not identity_runs.empty:
     plt.tight_layout()
     plt.show()
 
+    # --- Print top-3 eigenvalues and eigenvectors ---
+    for g in id_gains:
+        row_data = identity_runs[identity_runs["gain"] == g].iloc[0]
+        seed_path = os.path.join(sweep_dir, row_data["exp_name"], f"seed_{int(row_data['seed'])}")
+        config_file = os.path.join(seed_path, "run_config.yaml")
+        with open(config_file) as f:
+            run_config = yaml.safe_load(f)
+        dt = run_config["dt"]
+        tau = run_config["timescales_config"]["values"][0]
+        alpha = 1.0 - np.exp(-dt / tau)
+
+        best_ckpts = glob.glob(os.path.join(seed_path, "checkpoints", "best-model-*.ckpt"))
+        if not best_ckpts:
+            continue
+        ckpt = torch.load(best_ckpts[0], map_location="cpu", weights_only=False)
+        W_rec = None
+        for key, val in ckpt["state_dict"].items():
+            if "W_rec.weight" in key:
+                W_rec = val.numpy()
+                break
+        if W_rec is None:
+            continue
+
+        N = W_rec.shape[0]
+        J = (1.0 - alpha) * np.eye(N) + alpha * g * W_rec
+        eigenvalues, eigvecs = np.linalg.eig(J)
+        top3 = np.argsort(np.abs(eigenvalues))[-3:][::-1]
+
+        print(f"\n{'='*60}")
+        print(f"g = {g}  |  Top 3 eigenvalues of trained Identity network")
+        print(f"{'='*60}")
+        for rank, idx in enumerate(top3):
+            ev = eigenvalues[idx]
+            vec = eigvecs[:, idx]
+            is_real = np.max(np.abs(vec.imag)) < 1e-10
+            print(f"\n  λ_{rank+1}: {ev:.6f}  (|λ| = {np.abs(ev):.6f})")
+            print(f"    purely real: {is_real}")
+            if not is_real:
+                print(f"    Re(λ) = {ev.real:.6f}, Im(λ) = {ev.imag:.6f}")
+                print(f"    max |Im(v)| = {np.max(np.abs(vec.imag)):.6f}")
+            print(f"    eigvec norm = {np.linalg.norm(vec):.4f}")
+            print(f"    top-5 |components|: {np.sort(np.abs(vec))[-5:][::-1].real}")
+
     # --- Effective timescale scree plot: τ_eff = -1/log|λ| ---
     fig, axes = plt.subplots(1, len(id_gains), figsize=(3.2 * len(id_gains), 3),
                               squeeze=False, sharey=True)
@@ -800,6 +843,12 @@ if not identity_runs.empty:
         plt.tight_layout()
         plt.show()
 
+
+
+### ----------------Tanh networks------------------- ###
+
+
+
 # %% Jacobian analysis for Tanh networks (linearized at empirical operating point)
 # J(r*) = (1-α)I + α · diag(sech²(g·W_rec·r*)) · g·W_rec
 # We evaluate at the mean hidden state during "hold" periods (no recent pulse).
@@ -926,7 +975,7 @@ if not tanh_runs.empty:
         tanh_eig_data[g] = dict(
             eigs_trained=eigs_trained, eigs_untrained=eigs_untrained,
             top3_idx=top3_trained, projected=all_projected,
-            targets=tgt.numpy(), n_bits=n_bits,
+            targets=tgt.numpy(), inputs=inp.numpy(), n_bits=n_bits,
             eig_labels=[f"|λ|={np.abs(eigs_trained[i]):.3f}" for i in top3_trained],
         )
 
@@ -1013,6 +1062,8 @@ if not tanh_runs.empty:
         n_bits_proj = list(tanh_eig_data.values())[0]["n_bits"]
         n_cols = len(tanh_eig_data)
         SHARE_SCALE_TANH = True
+        HOLD_ONLY = True
+        PULSE_MARGIN = 10  # exclude this many timesteps after each pulse
 
         global_lim = None
         if SHARE_SCALE_TANH:
@@ -1024,6 +1075,21 @@ if not tanh_runs.empty:
         for col_idx, (g, data) in enumerate(sorted(tanh_eig_data.items())):
             all_proj = data["projected"]
             tgt_np = data["targets"]
+            inp_np = data["inputs"]
+
+            # Build hold mask: True at timesteps far from any pulse
+            if HOLD_ONLY:
+                any_pulse = (np.abs(inp_np) > 0.5).any(axis=-1)
+                near_pulse = np.zeros_like(any_pulse)
+                n_seq, n_t = any_pulse.shape
+                for dt_offset in range(PULSE_MARGIN + 1):
+                    shifted = np.zeros_like(any_pulse)
+                    if dt_offset <= n_t - 1:
+                        shifted[:, dt_offset:] = any_pulse[:, :n_t - dt_offset]
+                    near_pulse |= shifted
+                hold_mask_flat = (~near_pulse).ravel()
+            else:
+                hold_mask_flat = np.ones(all_proj.shape[0] * all_proj.shape[1], dtype=bool)
 
             for bit in range(n_bits_proj):
                 ax_idx = bit * n_cols + col_idx + 1
@@ -1031,13 +1097,16 @@ if not tanh_runs.empty:
 
                 pts = all_proj.reshape(-1, 3)
                 bit_vals = tgt_np[:, :, bit].ravel()
-                mask0 = bit_vals < 0.5
+
+                pts_f = pts[hold_mask_flat]
+                bits_f = bit_vals[hold_mask_flat]
+                mask0 = bits_f < 0.5
                 mask1 = ~mask0
                 if mask0.any():
-                    ax.scatter(pts[mask0, 0], pts[mask0, 1], pts[mask0, 2],
+                    ax.scatter(pts_f[mask0, 0], pts_f[mask0, 1], pts_f[mask0, 2],
                                s=1, alpha=0.15, c=BIT_COLORS[0], depthshade=False)
                 if mask1.any():
-                    ax.scatter(pts[mask1, 0], pts[mask1, 1], pts[mask1, 2],
+                    ax.scatter(pts_f[mask1, 0], pts_f[mask1, 1], pts_f[mask1, 2],
                                s=1, alpha=0.15, c=BIT_COLORS[1], depthshade=False)
 
                 if global_lim is not None:
@@ -1061,8 +1130,9 @@ if not tanh_runs.empty:
         fig.legend(handles=legend_els, loc="lower center", ncol=2, fontsize=10,
                    framealpha=0.8, bbox_to_anchor=(0.5, -0.02))
 
-        fig.suptitle("Slow-Mode Projections Colored by Target Bit — Tanh Networks",
-                     fontsize=14, fontweight="bold", y=1.0)
+        hold_label = f" (hold periods only, ±{PULSE_MARGIN} steps excluded)" if HOLD_ONLY else ""
+        fig.suptitle(f"Slow-Mode Projections Colored by Target Bit — Tanh Networks{hold_label}",
+                     fontsize=13, fontweight="bold", y=1.0)
         plt.tight_layout()
         plt.show()
 

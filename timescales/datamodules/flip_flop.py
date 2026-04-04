@@ -27,11 +27,15 @@ def simulate_flip_flop_trajectories(
     num_trajectories: int,
     num_time_steps: int,
     n_bits: int,
-    p_pulse: float,
+    p_pulse: float | list[float],
     pulse_amplitude: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Generate flip-flop trajectories.
+
+    Args:
+        p_pulse: Pulse probability per timestep. A scalar applies to all bits;
+                 a list of length n_bits sets a different rate per bit.
 
     Returns:
         inputs:  [B, T, n_bits]  pulse inputs (+1 set, -1 reset, 0 hold)
@@ -40,6 +44,7 @@ def simulate_flip_flop_trajectories(
     """
     B, T, N = num_trajectories, num_time_steps, n_bits
     amp = pulse_amplitude
+    p_arr = np.broadcast_to(np.asarray(p_pulse, dtype=np.float32), (N,))
 
     inputs = np.zeros((B, T, N), dtype=np.float32)
     states = np.zeros((B, T, N), dtype=np.float32)
@@ -47,7 +52,7 @@ def simulate_flip_flop_trajectories(
     current_state = np.zeros((B, N), dtype=np.float32)
 
     for t in range(T):
-        pulse_mask = np.random.random((B, N)) < p_pulse
+        pulse_mask = np.random.random((B, N)) < p_arr[np.newaxis, :]
         sign = (2 * np.random.randint(0, 2, size=(B, N)) - 1).astype(np.float32)
 
         inputs[:, t, :] = pulse_mask * sign * amp
@@ -67,7 +72,7 @@ class FlipFlopOnlineDataset(IterableDataset):
     def __init__(
         self,
         n_bits: int,
-        p_pulse: float,
+        p_pulse: float | list[float],
         pulse_amplitude: float,
         num_time_steps: int,
         batch_size: int,
@@ -98,7 +103,7 @@ class FlipFlopDataModule(L.LightningDataModule):
     def __init__(
         self,
         n_bits: int = 3,
-        p_pulse: float = 0.05,
+        p_pulse: float | list[float] = 0.05,
         pulse_amplitude: float = 1.0,
         num_time_steps: int = 500,
         num_val_trajectories: int = 2000,
@@ -110,7 +115,8 @@ class FlipFlopDataModule(L.LightningDataModule):
     ) -> None:
         """
         :param n_bits: Number of independent flip-flop bits.
-        :param p_pulse: Probability that a pulse arrives for any given bit at each step.
+        :param p_pulse: Pulse probability per timestep. Scalar (all bits equal)
+                        or list of length n_bits (per-bit rates).
         :param pulse_amplitude: Amplitude of the input pulse.
         :param num_time_steps: Sequence length per trajectory.
         :param num_val_trajectories: Number of fixed validation trajectories.
@@ -126,9 +132,14 @@ class FlipFlopDataModule(L.LightningDataModule):
         self.batch_size = batch_size
         self.num_workers = num_workers
 
-        avg_interval = 1.0 / max(p_pulse, 1e-8)
-        print(f"Flip-flop task: {n_bits} bits, p_pulse={p_pulse} "
-              f"(avg interval ~{avg_interval:.0f} steps)")
+        if isinstance(p_pulse, (list, tuple)):
+            intervals = [f"{1.0/max(p,1e-8):.0f}" for p in p_pulse]
+            print(f"Flip-flop task: {n_bits} bits, p_pulse={p_pulse} "
+                  f"(avg intervals ~{intervals} steps)")
+        else:
+            avg_interval = 1.0 / max(p_pulse, 1e-8)
+            print(f"Flip-flop task: {n_bits} bits, p_pulse={p_pulse} "
+                  f"(avg interval ~{avg_interval:.0f} steps)")
 
     def setup(self, stage=None) -> None:
         inputs, targets, states = simulate_flip_flop_trajectories(
