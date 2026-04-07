@@ -35,9 +35,9 @@ recurrent_gain: 1.0
 wrec_init: "orthogonal"
 noise_std: 0.0
 
-# s-network (linear, fixed)
+# s-network (linear, fixed by default)
 s_hidden_size: 64
-w_s_scale: 1.0
+w_s_gain: 1.0
 
 # Timescales (scalar, fixed)
 tau_r: 0.5

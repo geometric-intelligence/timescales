@@ -58,7 +58,7 @@ model = CoupledRNN(
     recurrent_gain=1.0,
     noise_std=0.0,
     wrec_init="orthogonal",
-    w_s_scale=1.0,
+    w_s_gain=1.0,
 ).to(device)
 
 dm = FlipFlopDataModule(

@@ -16,7 +16,7 @@ class CoupledRNNStep(nn.Module):
 
     Both updates use the "old" r, s (symmetric / parallel evaluation).
 
-    Trainable: W_rec, W_in, V, U.   Fixed: W_s.
+    Trainable: W_rec, W_in, V, U.   W_s fixed by default (trainable_w_s=True to learn it).
     """
 
     def __init__(
@@ -31,7 +31,8 @@ class CoupledRNNStep(nn.Module):
         zero_diag_wrec: bool = True,
         recurrent_gain: float = 1.0,
         noise_std: float = 0.0,
-        w_s_scale: float = 1.0,
+        w_s_gain: float = 1.0,
+        trainable_w_s: bool = False,
     ) -> None:
         super().__init__()
         self.input_size = input_size
@@ -43,6 +44,7 @@ class CoupledRNNStep(nn.Module):
         self.activation = activation()
         self.zero_diag_wrec = zero_diag_wrec
         self.recurrent_gain = recurrent_gain
+        self.w_s_gain = w_s_gain
         self.noise_std = noise_std
 
         alpha_r = 1.0 - np.exp(-dt / tau_r)
@@ -63,9 +65,11 @@ class CoupledRNNStep(nn.Module):
         # U is trainable
         self.U = nn.Linear(r_hidden_size, s_hidden_size, bias=False)
 
-        # W_s is fixed (stored as buffer so it won't appear in parameters())
-        W_s_data = torch.randn(s_hidden_size, s_hidden_size) * (w_s_scale / s_hidden_size**0.5)
-        self.register_buffer("W_s", W_s_data)
+        W_s_data = torch.randn(s_hidden_size, s_hidden_size) / s_hidden_size**0.5
+        if trainable_w_s:
+            self.W_s = nn.Parameter(W_s_data)
+        else:
+            self.register_buffer("W_s", W_s_data)
 
     def forward(
         self,
@@ -89,7 +93,7 @@ class CoupledRNNStep(nn.Module):
         r_new = (1 - self.alpha_r) * r + self.alpha_r * drive_r
 
         # s-network drive (linear)
-        drive_s = torch.nn.functional.linear(s, self.W_s) + self.U(r)
+        drive_s = self.w_s_gain * torch.nn.functional.linear(s, self.W_s) + self.U(r)
         s_new = (1 - self.alpha_s) * s + self.alpha_s * drive_s
 
         if self.noise_std > 0.0 and self.training:
@@ -123,7 +127,8 @@ class CoupledRNN(nn.Module):
         recurrent_gain: float = 1.0,
         noise_std: float = 0.0,
         wrec_init: str = "orthogonal",
-        w_s_scale: float = 1.0,
+        w_s_gain: float = 1.0,
+        trainable_w_s: bool = False,
     ) -> None:
         super().__init__()
         self.input_size = input_size
@@ -146,7 +151,8 @@ class CoupledRNN(nn.Module):
             zero_diag_wrec=zero_diag_wrec,
             recurrent_gain=recurrent_gain,
             noise_std=noise_std,
-            w_s_scale=w_s_scale,
+            w_s_gain=w_s_gain,
+            trainable_w_s=trainable_w_s,
         )
 
         self.W_out = nn.Linear(r_hidden_size, output_size, bias=False)

@@ -184,7 +184,8 @@ def create_coupled_rnn_model(config: dict):
         recurrent_gain=config.get("recurrent_gain", 1.0),
         noise_std=config.get("noise_std", 0.0),
         wrec_init=config.get("wrec_init", "orthogonal"),
-        w_s_scale=config.get("w_s_scale", 1.0),
+        w_s_gain=config.get("w_s_gain", 1.0),
+        trainable_w_s=config.get("trainable_w_s", False),
     )
 
     if "max_steps" in config:
