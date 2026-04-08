@@ -19,10 +19,10 @@ python single_run.py --config mts.yaml
 
 ### 2. Parameter Sweeps (`run_sweep.py`)
 
-For comparing multiple configurations systematically:
+For comparing multiple configurations systematically on multiple GPUs:
 
 ```bash
-python run_sweep.py --sweep sweep_configs/<sweep_name>.yaml
+python run_sweep.py --sweep sweep_configs/<sweep_name>.yaml --gpus 0,1,2,3
 ```
 
 **Use when:**

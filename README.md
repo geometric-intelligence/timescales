@@ -87,3 +87,18 @@ pytest .
 ```
 
 
+## To set up the kernel for Jupyter notebooks:
+
+1. Run the following command:
+
+```bash
+python -m ipykernel install --user --name timescales --display-name "Python (timescales)"
+```
+
+2. Verify the kernel was created:
+
+```bash
+jupyter kernelspec list
+```
+
+3. Refresh the kernel selector. If it doesn't show up, then (if using VSCode/Cursor): press `Command+Shift+P` to open the command palette, and select `Developer: Reload Window` to refresh the window.

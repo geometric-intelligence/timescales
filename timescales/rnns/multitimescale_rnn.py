@@ -493,6 +493,7 @@ class MultiTimescaleRNNLightning(L.LightningModule):
         task: str = "path_integration",
         precondition_gradients: bool = False,
         eps_alpha: float = 1e-2,
+        lr_interval: str = "epoch",
     ) -> None:
         """
         Initialize the Multi-timescale RNN Lightning module.
@@ -500,11 +501,12 @@ class MultiTimescaleRNNLightning(L.LightningModule):
         :param model: The MultiTimescaleRNN model.
         :param learning_rate: The learning rate.
         :param weight_decay: The weight decay for the recurrent weights.
-        :param step_size: The step size for the learning rate scheduler.
+        :param step_size: The step size for the learning rate scheduler (in epochs or steps).
         :param gamma: The gamma for the learning rate scheduler.
-        :param task: The task type ("path_integration" or "binary_counter").
+        :param task: The task type.
         :param precondition_gradients: If True, apply alpha-based gradient preconditioning.
         :param eps_alpha: Damping constant for numerical stability in preconditioner (1/(alpha + eps)).
+        :param lr_interval: LR scheduler interval — "epoch" or "step".
         """
         super().__init__()
         self.model = model
@@ -515,10 +517,13 @@ class MultiTimescaleRNNLightning(L.LightningModule):
         self.task = task
         self.precondition_gradients = precondition_gradients
         self.eps_alpha = eps_alpha
+        self.lr_interval = lr_interval
         
         # Task-specific loss function
         if task in ("binary_counter", "flip_flop"):
             self.loss_fn = nn.BCEWithLogitsLoss(reduction='none')
+        elif task == "teacher_student":
+            self.loss_fn = nn.MSELoss(reduction='none')
 
         if precondition_gradients:
             print(f"Gradient preconditioning ENABLED (eps_alpha={eps_alpha})")
@@ -557,8 +562,63 @@ class MultiTimescaleRNNLightning(L.LightningModule):
             }
 
             return total_loss, per_channel_dict
+        elif self.task == "teacher_student":
+            batch_size, seq_len, n_channels = outputs.shape
+
+            outputs_flat = outputs.reshape(-1, n_channels)
+            targets_flat = targets.reshape(-1, n_channels)
+
+            per_sample_loss = self.loss_fn(outputs_flat, targets_flat)
+
+            per_channel_loss = per_sample_loss.mean(dim=0)
+            total_loss = per_channel_loss.mean()
+
+            per_channel_dict = {
+                f"channel_{i}": per_channel_loss[i].item()
+                for i in range(n_channels)
+            }
+
+            return total_loss, per_channel_dict
         else:
             raise ValueError(f"Unknown task: {self.task}")
+
+    def _compute_accuracy(
+        self, outputs: torch.Tensor, targets: torch.Tensor
+    ) -> tuple[torch.Tensor | None, dict[str, float] | None]:
+        """Compute task-specific accuracy.
+
+        Returns:
+            overall_accuracy: Scalar accuracy (None for tasks without a natural accuracy).
+            per_channel_accuracies: Dict mapping channel names to per-channel accuracy
+                                    (None when not applicable).
+        """
+        if self.task in ("binary_counter", "flip_flop"):
+            preds = (torch.sigmoid(outputs) > 0.5).float()
+            per_channel_acc = (preds == targets).float().mean(dim=(0, 1))
+            overall_acc = per_channel_acc.mean()
+            per_channel_dict = {
+                f"channel_{i}": per_channel_acc[i].item()
+                for i in range(per_channel_acc.shape[0])
+            }
+            return overall_acc, per_channel_dict
+        elif self.task in ("path_integration", "path_integration_1d"):
+            pred_idx = outputs.reshape(-1, self.model.output_size).argmax(dim=-1)
+            tgt_idx = targets.reshape(-1, self.model.output_size).argmax(dim=-1)
+            acc = (pred_idx == tgt_idx).float().mean()
+            return acc, None
+        elif self.task == "teacher_student":
+            # R-squared: 1 - MSE / Var(targets)
+            mse = ((outputs - targets) ** 2).mean()
+            var = targets.var()
+            r_squared = 1.0 - mse / (var + 1e-8)
+            per_channel_r2 = {}
+            for i in range(outputs.shape[-1]):
+                ch_mse = ((outputs[..., i] - targets[..., i]) ** 2).mean()
+                ch_var = targets[..., i].var()
+                per_channel_r2[f"channel_{i}"] = (1.0 - ch_mse / (ch_var + 1e-8)).item()
+            return r_squared, per_channel_r2
+        else:
+            return None, None
 
     def training_step(self, batch) -> torch.Tensor:
         inputs, aux_info, targets = batch
@@ -588,7 +648,7 @@ class MultiTimescaleRNNLightning(L.LightningModule):
             sync_dist=True,
         )
         
-        # Log per-channel losses for binary_counter task
+        # Log per-channel losses
         if per_channel_losses is not None:
             for channel_name, channel_loss in per_channel_losses.items():
                 self.log(
@@ -598,6 +658,26 @@ class MultiTimescaleRNNLightning(L.LightningModule):
                     on_epoch=True,
                     sync_dist=True,
                 )
+
+        accuracy, per_channel_acc = self._compute_accuracy(outputs, targets)
+        if accuracy is not None:
+            self.log(
+                "train_accuracy",
+                accuracy,
+                on_step=True,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+            )
+            if per_channel_acc is not None:
+                for channel_name, acc in per_channel_acc.items():
+                    self.log(
+                        f"train_accuracy_{channel_name}",
+                        acc,
+                        on_step=True,
+                        on_epoch=True,
+                        sync_dist=True,
+                    )
 
         return loss
 
@@ -627,7 +707,7 @@ class MultiTimescaleRNNLightning(L.LightningModule):
             sync_dist=True,
         )
         
-        # Log per-channel losses for binary_counter task
+        # Log per-channel losses
         if per_channel_losses is not None:
             for channel_name, channel_loss in per_channel_losses.items():
                 self.log(
@@ -637,6 +717,26 @@ class MultiTimescaleRNNLightning(L.LightningModule):
                     on_epoch=True,
                     sync_dist=True,
                 )
+
+        accuracy, per_channel_acc = self._compute_accuracy(outputs, targets)
+        if accuracy is not None:
+            self.log(
+                "val_accuracy",
+                accuracy,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+            )
+            if per_channel_acc is not None:
+                for channel_name, acc in per_channel_acc.items():
+                    self.log(
+                        f"val_accuracy_{channel_name}",
+                        acc,
+                        on_step=False,
+                        on_epoch=True,
+                        sync_dist=True,
+                    )
 
         return loss
 
@@ -654,7 +754,7 @@ class MultiTimescaleRNNLightning(L.LightningModule):
             "optimizer": optimizer,
             "lr_scheduler": {
                 "scheduler": scheduler,
-                "interval": "epoch",
+                "interval": self.lr_interval,
                 "monitor": "val_loss",
             },
         }

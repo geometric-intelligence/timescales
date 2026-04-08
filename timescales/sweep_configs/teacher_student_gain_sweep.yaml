@@ -1,0 +1,35 @@
+# Teacher-Student Gain Sweep: Student Recurrent Gain × Activation
+#
+# Fixed teacher (g=0.99, tau=1.0, Tanh, normal_scaled W_rec) generates
+# targets with non-trivial timescale structure. Sweeps the student's
+# recurrent gain and activation function.
+#
+# Total configurations: 4 gains × 2 activations = 8 experiments
+# Seeds per config: 1
+# Total runs: 8
+
+base_config: "configs/teacher_student.yaml"
+n_seeds: 1
+
+fixed_overrides:
+  wrec_init: "normal_scaled"
+  dynamics_type: "rate"
+
+grid:
+  recurrent_gain:
+    - 0.2
+    - 0.3
+    - 0.4
+    - 0.5
+    - 0.6
+    - 0.7
+    - 0.8
+    - 0.9
+    - 0.95
+    - 0.99
+  activation:
+    - "Identity"
+    - "Tanh"
+
+naming:
+  format: "g_{recurrent_gain}_{activation}"

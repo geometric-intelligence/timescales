@@ -1,0 +1,55 @@
+# Flip-Flop Task — Coupled RNN (nonlinear r + linear s)
+#
+# Architecture:
+#   tau_r dr/dt = -r + phi(W_rec r + W_in u + V s)
+#   tau_s ds/dt = -s + W_s s + U r
+#   y_hat = W_out r
+#
+# Trainable: W_rec, W_in, V, U, W_out
+# Fixed:     W_s (random normal), tau_r, tau_s
+
+# General
+project_name: "flip_flop_coupled"
+model_type: "coupled"
+task: "flip_flop"
+seed: 0
+
+# Device
+accelerator: "gpu"
+devices: "auto"
+
+# Task parameters
+n_bits: 3
+p_pulse: 0.05
+pulse_amplitude: 1.0
+
+# Trajectory
+num_time_steps: 500
+dt: 0.1
+
+# r-network (nonlinear)
+r_hidden_size: 256
+activation: "Tanh"
+zero_diag_wrec: true
+recurrent_gain: 1.0
+wrec_init: "orthogonal"
+noise_std: 0.0
+
+# s-network (linear, fixed by default)
+s_hidden_size: 64
+w_s_gain: 1.0
+
+# Timescales (scalar, fixed)
+tau_r: 0.5
+tau_s: 5.0
+
+# Training (step-based)
+learning_rate: 0.001
+weight_decay: 0.0001
+max_steps: 1500
+val_every_n_steps: 10
+lr_step_size: 1000
+gamma: 0.5
+batch_size: 200
+num_val_trajectories: 2000
+num_workers: 4

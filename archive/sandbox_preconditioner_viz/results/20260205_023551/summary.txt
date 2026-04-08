@@ -1,0 +1,20 @@
+
+======================================================================
+RESULTS SUMMARY
+======================================================================
+Configuration:
+  Timescales: alpha_fast=0.9, alpha_slow=0.1
+  Rollout length: T=20
+  Optimization steps: 5000
+  Number of trajectories: 8
+
+Standard GD (n=8):
+  Final loss: 0.00010702 +/- 0.00016463
+  Best: 0.00000049, Worst: 0.00047747
+
+Preconditioned GD (n=8):
+  Final loss: 0.00000002 +/- 0.00000002
+  Best: 0.00000000, Worst: 0.00000008
+
+Average improvement: 5594.7x lower final loss with preconditioning
+======================================================================

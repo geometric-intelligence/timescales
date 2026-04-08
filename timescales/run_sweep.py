@@ -24,12 +24,8 @@ import datetime
 import copy
 import itertools
 import subprocess
-import tempfile
 from typing import List, Dict, Any, Tuple
-from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from queue import Queue
-from threading import Lock
 import numpy as np
 
 
@@ -233,25 +229,39 @@ def run_job_subprocess(job: Job, gpu_id: int) -> Dict[str, Any]:
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     
-    print(f"[GPU {gpu_id}] Starting {job.job_id}")
+    tag = f"[GPU {gpu_id}] {job.job_id}"
+    print(f"{tag} — starting")
     
     import time
     start_time = time.time()
     
+    PROGRESS_KEYWORDS = {"val_accuracy"}
+    
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
             env=env,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
             cwd=script_dir,
         )
         
+        stderr_lines = []
+        for line in proc.stdout:
+            line = line.rstrip()
+            if not line:
+                continue
+            if any(kw in line for kw in PROGRESS_KEYWORDS):
+                print(f"{tag} | {line}", flush=True)
+            stderr_lines.append(line)
+        
+        proc.wait()
+        
         elapsed_time = time.time() - start_time
         elapsed_str = _format_duration(elapsed_time)
         
-        if result.returncode == 0:
-            # Try to read the result file
+        if proc.returncode == 0:
             result_file = os.path.join(job.seed_dir, "job_result.yaml")
             if os.path.exists(result_file):
                 with open(result_file, "r") as f:
@@ -259,7 +269,7 @@ def run_job_subprocess(job: Job, gpu_id: int) -> Dict[str, Any]:
             else:
                 job_result = {"final_val_loss": None}
             
-            print(f"[GPU {gpu_id}] ✓ {job.job_id} completed in {elapsed_str}")
+            print(f"{tag} — ✓ completed in {elapsed_str}")
             return {
                 "experiment_name": job.exp_name,
                 "seed": job.seed,
@@ -271,20 +281,21 @@ def run_job_subprocess(job: Job, gpu_id: int) -> Dict[str, Any]:
                 "completed_at": datetime.datetime.now().isoformat(),
             }
         else:
-            print(f"[GPU {gpu_id}] ✗ {job.job_id} failed after {elapsed_str}")
-            print(f"  stderr: {result.stderr[:500] if result.stderr else 'None'}")
+            combined = "\n".join(stderr_lines[-20:])
+            print(f"{tag} — ✗ failed after {elapsed_str}")
+            print(f"  last output: {combined[:500]}")
             return {
                 "experiment_name": job.exp_name,
                 "seed": job.seed,
                 "status": "failed",
-                "error": result.stderr[:1000] if result.stderr else "Unknown error",
+                "error": combined[:1000],
                 "runtime_seconds": elapsed_time,
                 "failed_at": datetime.datetime.now().isoformat(),
             }
             
     except Exception as e:
         elapsed_time = time.time() - start_time
-        print(f"[GPU {gpu_id}] ✗ {job.job_id} exception: {e}")
+        print(f"{tag} — ✗ exception: {e}")
         return {
             "experiment_name": job.exp_name,
             "seed": job.seed,

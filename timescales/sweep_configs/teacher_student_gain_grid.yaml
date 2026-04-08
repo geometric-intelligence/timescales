@@ -1,0 +1,38 @@
+# Teacher-Student Gain Grid: Teacher g × Student g × Activation
+#
+# Sweeps BOTH the teacher's and student's recurrent gain to deconfound
+# "higher g is better" from "matching the teacher is better."
+#
+# If the diagonal (student_g ≈ teacher_g) always wins → matching story.
+# If the top row (high student_g) always wins → genuine high-g advantage.
+#
+# Total configurations: 5 teacher_g × 5 student_g × 2 activations = 50 experiments
+# Seeds per config: 1
+# Total runs: 50
+
+base_config: "configs/teacher_student.yaml"
+n_seeds: 1
+
+fixed_overrides:
+  wrec_init: "normal_scaled"
+  dynamics_type: "rate"
+
+grid:
+  teacher_recurrent_gain:
+    - 0.3
+    - 0.5
+    - 0.7
+    - 0.9
+    - 0.99
+  recurrent_gain:
+    - 0.3
+    - 0.5
+    - 0.7
+    - 0.9
+    - 0.99
+  activation:
+    - "Identity"
+    - "Tanh"
+
+naming:
+  format: "tg_{teacher_recurrent_gain}_sg_{recurrent_gain}_{activation}"
