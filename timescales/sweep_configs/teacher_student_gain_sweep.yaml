@@ -8,7 +8,7 @@
 # Seeds per config: 1
 # Total runs: 8
 
-base_config: "base_configs/teacher_student.yaml"
+base_config: "configs/teacher_student.yaml"
 n_seeds: 1
 
 fixed_overrides:

@@ -9,7 +9,7 @@
 #
 # Total: 6 tau_s values x 1 seed = 6 runs
 
-base_config: "timescales/base_configs/flip_flop_coupled.yaml"
+base_config: "configs/flip_flop_coupled.yaml"
 n_seeds: 3
 
 grid:

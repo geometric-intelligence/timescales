@@ -9,7 +9,7 @@
 #   - discrete_4: Four timescales (α=0.2,0.4,0.6,0.8 → τ=0.448,0.196,0.109,0.062s)
 #   - powerlaw: Continuous power-law (exponent=2.0, range [0.05, 2.0]s)
 
-base_config: "base_configs/mts.yaml"
+base_config: "configs/mts.yaml"
 n_seeds: 1
 gpus: [0, 1, 2, 3]
 

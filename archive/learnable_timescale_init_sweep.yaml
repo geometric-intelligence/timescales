@@ -16,7 +16,7 @@
 #
 # Total experiments: 8 init values × 2 activation = 16 experiments
 
-base_config: "base_configs/mts.yaml"
+base_config: "configs/mts.yaml"
 n_seeds: 1
 gpus: [0, 1, 2, 3]  # GPUs to use for parallel job scheduling
 

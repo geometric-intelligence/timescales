@@ -6,7 +6,7 @@
 #
 # Total: 2 configs x 1 seed = 2 runs
 
-base_config: "base_configs/flip_flop_coupled.yaml"
+base_config: "configs/flip_flop_coupled.yaml"
 n_seeds: 1
 
 fixed_overrides:

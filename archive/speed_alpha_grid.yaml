@@ -15,7 +15,7 @@
 #   - Speed-timescale matching/mismatch effects
 #   - Learning dynamics across parameter space
 
-base_config: "base_configs/mts.yaml"
+base_config: "configs/mts.yaml"
 
 # Number of seeds per configuration
 n_seeds: 1

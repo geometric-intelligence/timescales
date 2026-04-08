@@ -11,7 +11,7 @@
 # Seeds per config: 1
 # Total runs: 20
 
-base_config: "base_configs/flip_flop.yaml"
+base_config: "configs/flip_flop.yaml"
 n_seeds: 1
 
 fixed_overrides:

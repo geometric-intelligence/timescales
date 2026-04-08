@@ -13,7 +13,7 @@
 #
 # Total experiments: 13 neural_mean × 13 behavioral_mean = 169 experiments
 
-base_config: "timescales/base_configs/mts.yaml"
+base_config: "configs/mts.yaml"
 n_seeds: 1
 
 # Fixed parameters for this sweep
