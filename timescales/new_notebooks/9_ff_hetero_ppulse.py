@@ -324,7 +324,17 @@ plt.show()
 
 
 # %% Plot 4: Effective timescale scree plot — tau_eff = -1/ln|lambda|
-fig, axes = plt.subplots(1, n_gains, figsize=(3.5 * n_gains, 3.5), squeeze=False, sharey=True)
+SAVE_FIGS = True
+FIGS_DIR = os.path.join(os.path.dirname(__file__), "figs")
+os.makedirs(FIGS_DIR, exist_ok=True)
+
+_sample = next(iter(eig_data.values()))
+_pp = _sample["p_pulse"]
+_pp_list = _pp if isinstance(_pp, list) else [_pp]
+_holds = [1.0 / p for p in _pp_list]
+
+fig, axes = plt.subplots(1, n_gains, figsize=(5 * n_gains, 4.5),
+                         squeeze=False, sharey=True)
 
 for col, g in enumerate(gains):
     ax = axes[0, col]
@@ -341,35 +351,61 @@ for col, g in enumerate(gains):
     log_abs = np.log(np.clip(abs_sorted, 1e-12, None))
     tau_eff = -1.0 / np.where(log_abs < -1e-10, log_abs, -1e-10)
 
-    ax.scatter(ranks[:n_bits], tau_eff[:n_bits], s=50, color=TRAINED_COLOR,
-               edgecolors="none", zorder=3, label=f"Top {n_bits} (slow modes)")
-    ax.scatter(ranks[n_bits:], tau_eff[n_bits:], s=30, color=UNTRAINED_COLOR,
-               edgecolors="none", zorder=3, label="Remaining")
+    ax.scatter(ranks[n_bits:], tau_eff[n_bits:], s=20, color=UNTRAINED_COLOR,
+               edgecolors="none", alpha=0.6, zorder=3, label="Other modes")
 
-    for i in range(min(n_bits, len(tau_eff))):
-        ax.annotate(f"{tau_eff[i]:.1f}", (ranks[i], tau_eff[i]),
-                    textcoords="offset points", xytext=(8, 4), fontsize=8,
-                    color=TRAINED_COLOR)
+    # Eigenvalue ranks 0..5 match hold indices 1..6 (skip hold_0=500,
+    # skip eigenvalue rank 6 which doesn't clearly correspond to any hold).
+    n_matched = min(n_bits - 1, len(tau_eff))
+    match_colors = [f"C{i}" for i in range(n_matched)]
 
-    ax.set_xlabel("Rank", fontsize=11)
+    for i in range(n_matched):
+        c = match_colors[i]
+        ax.scatter(ranks[i], tau_eff[i], s=70, color=c,
+                   edgecolors="white", linewidths=0.8, zorder=4)
+        ax.annotate(f"$\\tau$ = {tau_eff[i]:.0f}",
+                    (ranks[i], tau_eff[i]),
+                    textcoords="offset points", xytext=(10, 0),
+                    fontsize=9, color=c, fontweight="bold",
+                    va="center",
+                    arrowprops=dict(arrowstyle="-", color=c,
+                                   lw=0.6, alpha=0.4))
+
+    for i in range(n_matched, min(n_bits, len(tau_eff))):
+        ax.scatter(ranks[i], tau_eff[i], s=40, color=UNTRAINED_COLOR,
+                   edgecolors="white", linewidths=0.6, zorder=4, alpha=0.7)
+
+    for i in range(n_matched):
+        hold = _holds[i + 1]
+        c = match_colors[i]
+        ax.axhline(hold, color=c, linewidth=0.9, linestyle=":",
+                   alpha=0.5, zorder=1)
+        ax.text(N * 0.92, hold * 1.15,
+                f"hold ≈ {hold:.0f}", fontsize=7.5,
+                color=c, ha="right", alpha=0.7)
+
+    ax.set_xlabel("Eigenvalue rank", fontsize=11)
+    ax.set_xscale("log")
     if col == 0:
-        ax.set_ylabel("$\\tau_{\\mathrm{eff}} = -1\\,/\\,\\ln|\\lambda|$\n(steps)",
-                      fontsize=10)
-    ax.set_title(f"g = {g}", fontsize=11)
-    ax.grid(True, alpha=0.15, which="both")
-    if col == 0:
-        ax.legend(fontsize=7, loc="upper right", framealpha=0.7)
+        ax.set_ylabel(r"$\tau_{\mathrm{eff}} = -1\,/\,\ln|\lambda|$  (steps)",
+                      fontsize=11)
+    ax.set_title(f"$g = {g}$", fontsize=12)
+    ax.grid(True, alpha=0.12, which="both")
+    ax.legend(fontsize=8, loc="center right", framealpha=0.85,
+              edgecolor="none")
     ax.set_yscale("log")
+    ax.tick_params(labelsize=9)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
 
-# Build subtitle from actual config
-_sample = next(iter(eig_data.values()))
-_pp = _sample["p_pulse"]
-_pp_str = _pp if isinstance(_pp, list) else [_pp]
-_holds = [f"{1.0/p:.0f}" for p in _pp_str]
-fig.suptitle(f"Effective Timescales (ranked) — Hetero p_pulse (Identity)\n"
-             f"p_pulse = {_pp_str}  (hold intervals ~{_holds} steps)",
-             fontsize=12, fontweight="bold", y=1.06)
+fig.suptitle("Effective Timescales (ranked eigenvalues)",
+             fontsize=14, fontweight="bold")
 plt.tight_layout()
+
+if SAVE_FIGS:
+    fig.savefig(os.path.join(FIGS_DIR, "tau_eff_scree.pdf"),
+                bbox_inches="tight", dpi=150)
+    print(f"Saved to {FIGS_DIR}/tau_eff_scree.pdf")
 plt.show()
 
 # %% Plot 5: Mode-to-output coupling — |W_out @ V| for top modes
@@ -424,6 +460,10 @@ for g in gains:
                  f"Which slow mode drives which output bit?",
                  fontsize=12, fontweight="bold", y=1.04)
     plt.tight_layout()
+    if SAVE_FIGS:
+        fig.savefig(os.path.join(FIGS_DIR, f"mode_output_coupling_g{g}.pdf"),
+                    bbox_inches="tight", dpi=150)
+        print(f"Saved to {FIGS_DIR}/mode_output_coupling_g{g}.pdf")
     plt.show()
 
     # Identify dominant mode per bit
@@ -433,6 +473,122 @@ for g in gains:
         mode_j = dominant[bit_i]
         print(f"  Bit {bit_i} (p_pulse={pp_list[bit_i]}, hold~{1.0/pp_list[bit_i]:.0f} steps)"
               f"  <--  Mode {mode_j+1} (tau_eff={tau_modes[mode_j]:.1f} steps)")
+
+
+# %% Plot 6: Eigenvector orthogonality — slow (top |λ|) vs bulk modes
+# J is non-symmetric, so right eigenvectors need not be orthogonal.
+# We show |V^H V| for the top-n_bits modes, the next n_bits modes (bulk), and cross overlap.
+
+
+def _unit_norm_columns(M: np.ndarray) -> np.ndarray:
+    norms = np.linalg.norm(M, axis=0, keepdims=True)
+    norms = np.where(norms < 1e-12, 1.0, norms)
+    return M / norms
+
+
+def _offdiag_abs(G: np.ndarray) -> np.ndarray:
+    n = G.shape[0]
+    m = np.abs(G)
+    return m[~np.eye(n, dtype=bool)]
+
+
+for g in gains:
+    if g not in eig_data:
+        continue
+    data = eig_data[g]
+    eigs = data["eigs"]
+    V_full = data["eigvecs"]
+    n_bits = data["n_bits"]
+    N = V_full.shape[0]
+
+    abs_sorted_idx = np.argsort(np.abs(eigs))[::-1]
+    top_idx = abs_sorted_idx[:n_bits]
+    bulk_idx = abs_sorted_idx[n_bits : n_bits + n_bits]
+    if len(bulk_idx) < n_bits:
+        print(f"g={g}: not enough modes for bulk comparison, skipping orthogonality plot")
+        continue
+
+    Vs = _unit_norm_columns(V_full[:, top_idx])
+    Vb = _unit_norm_columns(V_full[:, bulk_idx])
+
+    G_slow = Vs.conj().T @ Vs
+    G_bulk = Vb.conj().T @ Vb
+    G_cross = Vs.conj().T @ Vb
+
+    abs_slow = np.abs(G_slow)
+    abs_bulk = np.abs(G_bulk)
+    abs_cross = np.abs(G_cross)
+
+    od_slow = _offdiag_abs(G_slow)
+    od_bulk = _offdiag_abs(G_bulk)
+    od_cross = abs_cross.ravel()
+
+    print(f"\ng = {g} — eigenvector overlap (|inner product|)")
+    print(f"  slow–slow off-diag: mean={od_slow.mean():.4f}, max={od_slow.max():.4f}")
+    print(f"  bulk–bulk off-diag: mean={od_bulk.mean():.4f}, max={od_bulk.max():.4f}")
+    print(f"  slow–bulk (all pairs): mean={od_cross.mean():.4f}, max={od_cross.max():.4f}")
+
+    fig = plt.figure(figsize=(13, 5.2), layout="constrained")
+    gs = fig.add_gridspec(2, 3, height_ratios=[1, 0.85], hspace=0.35, wspace=0.35)
+
+    vmax = max(abs_slow.max(), abs_bulk.max(), abs_cross.max(), 1e-8)
+
+    ax0 = fig.add_subplot(gs[0, 0])
+    im0 = ax0.imshow(abs_slow, cmap="viridis", vmin=0, vmax=vmax, aspect="equal")
+    ax0.set_xticks(range(n_bits))
+    ax0.set_yticks(range(n_bits))
+    ax0.set_xticklabels([f"{i+1}" for i in range(n_bits)], fontsize=9)
+    ax0.set_yticklabels([f"{i+1}" for i in range(n_bits)], fontsize=9)
+    ax0.set_xlabel("slow mode $j$", fontsize=10)
+    ax0.set_ylabel("slow mode $i$", fontsize=10)
+    ax0.set_title("$|v_i^H v_j|$ — top $|\\lambda|$ modes", fontsize=11)
+
+    ax1 = fig.add_subplot(gs[0, 1])
+    im1 = ax1.imshow(abs_bulk, cmap="viridis", vmin=0, vmax=vmax, aspect="equal")
+    ax1.set_xticks(range(n_bits))
+    ax1.set_yticks(range(n_bits))
+    ax1.set_xticklabels([f"{i+1}" for i in range(n_bits)], fontsize=9)
+    ax1.set_yticklabels([f"{i+1}" for i in range(n_bits)], fontsize=9)
+    ax1.set_xlabel("bulk mode $j$", fontsize=10)
+    ax1.set_ylabel("bulk mode $i$", fontsize=10)
+    ax1.set_title("$|v_i^H v_j|$ — ranks "
+                  f"{n_bits+1}…{2*n_bits} by $|\\lambda|$", fontsize=11)
+
+    ax2 = fig.add_subplot(gs[0, 2])
+    im2 = ax2.imshow(abs_cross, cmap="magma", vmin=0, vmax=vmax, aspect="auto")
+    ax2.set_xticks(range(n_bits))
+    ax2.set_yticks(range(n_bits))
+    ax2.set_xticklabels([f"b{j+1}" for j in range(n_bits)], fontsize=8)
+    ax2.set_yticklabels([f"s{i+1}" for i in range(n_bits)], fontsize=8)
+    ax2.set_xlabel("bulk mode (rank block)", fontsize=10)
+    ax2.set_ylabel("slow mode", fontsize=10)
+    ax2.set_title("slow $\\times$ bulk: $|v_s^H v_b|$", fontsize=11)
+
+    cbar = fig.colorbar(im2, ax=[ax0, ax1, ax2], shrink=0.85, aspect=28, pad=0.02)
+    cbar.set_label(r"$|\langle v_i, v_j \rangle|$", fontsize=10)
+
+    axh = fig.add_subplot(gs[1, :])
+    bins = np.linspace(0, min(1.0, max(od_slow.max(), od_bulk.max(), 0.05) * 1.1), 35)
+    axh.hist(od_slow, bins=bins, alpha=0.65, label=f"slow–slow off-diag (n={len(od_slow)})",
+             color=TRAINED_COLOR, density=True)
+    axh.hist(od_bulk, bins=bins, alpha=0.55, label=f"bulk–bulk off-diag (n={len(od_bulk)})",
+             color=UNTRAINED_COLOR, density=True)
+    axh.axvline(od_cross.mean(), color="#6a4c93", linestyle="--", linewidth=1.2,
+                label=f"slow–bulk mean = {od_cross.mean():.3f}")
+    axh.set_xlabel(r"$|\langle v_i, v_j \rangle|$ (off-diagonal or cross pairs)", fontsize=11)
+    axh.set_ylabel("density", fontsize=11)
+    axh.legend(fontsize=9, loc="upper right")
+    axh.set_title("Pairwise overlap magnitudes", fontsize=11)
+    axh.spines["top"].set_visible(False)
+    axh.spines["right"].set_visible(False)
+
+    fig.suptitle(f"Eigenmode orthogonality — trained Jacobian, $g = {g}$",
+                 fontsize=13, fontweight="bold")
+    if SAVE_FIGS:
+        fig.savefig(os.path.join(FIGS_DIR, f"eigenmode_orthogonality_g{g}.pdf"),
+                    bbox_inches="tight", dpi=150)
+        print(f"Saved to {FIGS_DIR}/eigenmode_orthogonality_g{g}.pdf")
+    plt.show()
 
 
 # %% Summary: print top-N effective timescales vs expected hold intervals
