@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import json
 from collections import defaultdict
-from timescales.rnns.multitimescale_rnn import MultiTimescaleRNN, MultiTimescaleRNNLightning
+from timescales.rnns.rnn import RNN, RNNLightning
 
 
 def load_experiment_sweep(
@@ -156,17 +156,17 @@ def load_experiment_sweep(
                     checkpoint_path = checkpoint_files[0]
 
                     # Create base model
-                    model = MultiTimescaleRNN(
+                    model = RNN(
                         input_size=config["input_size"],
                         hidden_size=config["hidden_size"],
                         output_size=config["num_place_cells"],
                         dt=config["dt"],
-                        timescales_config=config["timescales_config"],
+                        time_constants_config=config["time_constants_config"],
                         activation=getattr(nn, config["activation"]),
                     )
 
                     # Load Lightning model
-                    model_lightning = MultiTimescaleRNNLightning.load_from_checkpoint(
+                    model_lightning = RNNLightning.load_from_checkpoint(
                         checkpoint_path,
                         model=model,
                         learning_rate=config["learning_rate"],
@@ -180,12 +180,12 @@ def load_experiment_sweep(
                 else:
                     # Load PyTorch final model
                     # Create model
-                    model = MultiTimescaleRNN(
+                    model = RNN(
                         input_size=config["input_size"],
                         hidden_size=config["hidden_size"],
                         output_size=config["num_place_cells"],
                         dt=config["dt"],
-                        timescales_config=config["timescales_config"],
+                        time_constants_config=config["time_constants_config"],
                         activation=getattr(nn, config["activation"]),
                     )
 

@@ -1,0 +1,25 @@
+# Coupled RNN on 3-bit Flip-Flop: sweep over tau_s
+#
+# Varies the timescale of the linear s-network to see how
+# slower/faster memory affects learning and learned representations.
+#
+# tau_s values span from fast (0.5, same as tau_r) to very slow (50.0).
+# With dt=0.1 and p_pulse=0.05, the expected hold interval is ~20 steps
+# = 2.0 time units, so tau_s values bracket this scale.
+#
+# Total: 6 tau_s values x 3 seeds = 18 runs
+
+base_config: "configs/coupled/flip_flop.yaml"
+n_seeds: 3
+
+grid:
+  tau_s:
+    - 0.5
+    - 1.0
+    - 2.0
+    - 5.0
+    - 10.0
+    - 50.0
+
+naming:
+  format: "tau_s_{tau_s}"

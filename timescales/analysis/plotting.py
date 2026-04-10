@@ -19,14 +19,14 @@ def create_color_mapping(
     Args:
         models: Models dictionary from load_experiment_sweep
         colormap: Name of matplotlib colormap (e.g., 'viridis', 'plasma')
-        config_path: List of keys to access value in config, e.g., ['timescales_config', 'std']
-                     or string with dot notation, e.g., 'timescales_config.std'
+        config_path: List of keys to access value in config, e.g., ['time_constants_config', 'std']
+                     or string with dot notation, e.g., 'time_constants_config.std'
     
     Returns:
         dict: Mapping from experiment name to color (exp_name -> rgba tuple)
     
     Example:
-        colors = create_color_mapping(models_mean_03, 'viridis', ['timescales_config', 'std'])
+        colors = create_color_mapping(models_mean_03, 'viridis', ['time_constants_config', 'std'])
         plot_training_curves_sweep(models_mean_03, colors=colors)
     """
     import matplotlib.pyplot as plt

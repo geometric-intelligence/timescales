@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import torch
 from scipy import ndimage
 from typing import Tuple, Optional, List
-from timescales.rnns.multitimescale_rnn import MultiTimescaleRNN
+from timescales.rnns.rnn import RNN
 from timescales.scores import GridScorer
 
 
@@ -111,7 +111,7 @@ class SpatialAnalyzer:
 
     def __init__(
         self,
-        model: MultiTimescaleRNN,
+        model: RNN,
         device: str,
     ):
         """
@@ -119,7 +119,7 @@ class SpatialAnalyzer:
 
         Parameters:
         -----------
-        model : MultiTimescaleRNN
+        model : RNN
             Trained model to analyze
         device : str
             Device to run model on ("cuda" or "cpu")
@@ -344,7 +344,7 @@ class SpatialAnalyzer:
         elif rows == 1:
             axes = axes.reshape(1, -1)
 
-        title_prefix = "MultiTimescaleRNN"
+        title_prefix = "RNN"
 
         for idx, unit_idx in enumerate(units_to_plot):
             row = idx // cols
