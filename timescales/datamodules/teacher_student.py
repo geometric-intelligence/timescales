@@ -5,7 +5,7 @@ A teacher-student setup where a fixed random teacher RNN generates target
 outputs from smoothed random inputs. The student RNN trains to reproduce
 the teacher's input-output mapping via MSE loss.
 
-The teacher is a MultiTimescaleRNN with:
+The teacher is an RNN with:
 - Fixed random connectivity (W_rec ~ N(0, 1/N))
 - Configurable recurrent gain and intrinsic timescale
 - Initialized with a dedicated seed independent of the training seed
@@ -24,7 +24,7 @@ import torch.nn as nn
 from scipy.signal import savgol_filter
 from torch.utils.data import DataLoader, TensorDataset
 
-from timescales.rnns.multitimescale_rnn import MultiTimescaleRNN
+from timescales.rnns.rnn import RNN
 
 
 def generate_smooth_inputs(
@@ -70,7 +70,7 @@ def create_teacher(
     activation: str,
     wrec_init: str,
     teacher_seed: int,
-) -> MultiTimescaleRNN:
+) -> RNN:
     """
     Create a deterministic teacher RNN using a dedicated seed.
 
@@ -90,15 +90,15 @@ def create_teacher(
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(teacher_seed)
 
-    teacher = MultiTimescaleRNN(
+    teacher = RNN(
         input_size=input_size,
         hidden_size=hidden_size,
         output_size=output_size,
         dt=dt,
-        timescales_config={"type": "discrete", "values": [timescale]},
+        time_constants_config={"type": "discrete", "values": [timescale]},
         activation=getattr(nn, activation),
-        learn_timescales=False,
-        shared_timescale=False,
+        learn_time_constants=False,
+        shared_time_constant=False,
         normalize_hidden=False,
         zero_diag_wrec=False,
         recurrent_gain=recurrent_gain,

@@ -109,7 +109,7 @@ class CoupledRNN(nn.Module):
     """
     Coupled RNN with a nonlinear r-network and a linear s-network.
 
-    Forward signature matches the existing MultiTimescaleRNN convention,
+    Forward signature matches the existing RNN convention,
     but returns three tensors: (r_states, s_states, outputs).
     """
 
@@ -240,7 +240,7 @@ class CoupledRNNLightning(L.LightningModule):
             self.loss_fn = nn.MSELoss(reduction="none")
 
     # ------------------------------------------------------------------
-    # Loss & accuracy (same logic as MultiTimescaleRNNLightning)
+    # Loss & accuracy (same logic as RNNLightning)
     # ------------------------------------------------------------------
 
     def _compute_loss(

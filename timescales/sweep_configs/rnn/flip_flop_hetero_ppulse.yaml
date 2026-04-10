@@ -1,0 +1,30 @@
+# Flip-Flop with Heterogeneous Pulse Rates (per-bit p_pulse)
+#
+# Each of the 3 bits receives pulses at a different rate, creating
+# hold intervals of ~200, ~50, and ~10 steps respectively.
+# Identity activation only, 3 representative gain values.
+#
+# Total configurations: 1 gains x 1 activation = 1 experiments
+# Seeds per config: 1
+# Total runs: 1
+
+base_config: "configs/rnn/flip_flop.yaml"
+n_seeds: 1
+
+fixed_overrides:
+  hidden_size: 512
+  max_steps: 3000
+  wrec_init: "normal_scaled"
+  zero_diag_wrec: false
+  n_bits: 6
+  dynamics_type: "rate"
+  activation: "Identity"
+  p_pulse: [0.005, 0.007, 0.01, 0.02, 0.05, 0.1]
+  num_time_steps: 1000
+
+grid:
+  recurrent_gain:
+    - 0.5
+
+naming:
+  format: "g_{recurrent_gain}"

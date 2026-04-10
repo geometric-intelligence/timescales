@@ -9,7 +9,7 @@ from unittest.mock import Mock
 from torch.utils.data import DataLoader, TensorDataset
 
 from timescales.analysis.measurements import Measurement, PositionDecodingMeasurement
-from timescales.rnns.multitimescale_rnn import MultiTimescaleRNN
+from timescales.rnns.rnn import RNN
 
 
 class TestMeasurementBase:
@@ -151,9 +151,9 @@ class TestPositionDecodingMeasurement:
             )
             assert result_gpu.device.type == "cuda"
 
-    def test_compute_with_multitimescale_model(self, measurement, mock_datamodule):
-        """Test compute method with a MultiTimescaleRNN model."""
-        mock_model = Mock(spec=MultiTimescaleRNN)
+    def test_compute_with_rnn_model(self, measurement, mock_datamodule):
+        """Test compute method with an RNN model."""
+        mock_model = Mock(spec=RNN)
         mock_model.eval.return_value = None
 
         # Mock the forward pass

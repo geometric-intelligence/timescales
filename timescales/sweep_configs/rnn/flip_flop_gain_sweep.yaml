@@ -1,0 +1,37 @@
+# Flip-Flop Gain Sweep: Recurrent Gain x Activation (Linear vs Tanh)
+#
+# Gaussian W_rec initialization (Normal(0, 1/N)), 3-bit flip-flop task.
+# Sweeps over recurrent gain g and activation function (Identity vs Tanh).
+#
+# Total configurations: 10 gains x 2 activations = 20 experiments
+# Seeds per config: 1
+# Total runs: 20
+
+base_config: "configs/rnn/flip_flop.yaml"
+n_seeds: 1
+
+fixed_overrides:
+  wrec_init: "normal_scaled"
+  n_bits: 3
+  dynamics_type: "rate"
+  p_pulse: 0.01
+  num_time_steps: 1000
+
+grid:
+  recurrent_gain:
+    - 0.2
+    - 0.3
+    - 0.4
+    - 0.5
+    - 0.6
+    - 0.7
+    - 0.8
+    - 0.9
+    - 0.95
+    - 0.99
+  activation:
+    - "Identity"
+    - "Tanh"
+
+naming:
+  format: "g_{recurrent_gain}_{activation}"
