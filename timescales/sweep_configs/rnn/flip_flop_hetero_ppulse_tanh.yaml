@@ -1,0 +1,38 @@
+# Flip-Flop with Heterogeneous Pulse Rates — Tanh Activation
+#
+# Same task as flip_flop_hetero_ppulse but with Tanh nonlinearity.
+# 6-bit flip-flop, heterogeneous p_pulse, gain sweep including g > 1
+# (tanh saturates so supercritical gains are stable).
+#
+# Total: 8 gains × 1 seed = 8 runs
+
+base_config: "configs/rnn/flip_flop.yaml"
+n_seeds: 1
+
+fixed_overrides:
+  hidden_size: 512
+  max_steps: 5000
+  val_every_n_steps: 10
+  lr_step_size: 1500
+  wrec_init: "normal_scaled"
+  zero_diag_wrec: false
+  n_bits: 6
+  dynamics_type: "rate"
+  activation: "Tanh"
+  p_pulse: [0.005, 0.007, 0.01, 0.02, 0.05, 0.1]
+  num_time_steps: 1000
+  track_gradients: true
+
+grid:
+  recurrent_gain:
+    - 0.5
+    - 0.7
+    - 0.9
+    - 0.95
+    - 0.99
+    - 1.0
+    - 1.2
+    - 1.5
+
+naming:
+  format: "g_{recurrent_gain}"
