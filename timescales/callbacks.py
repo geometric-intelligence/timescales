@@ -19,6 +19,9 @@ class LossLoggerCallback(L.Callback):
         self.val_accuracies: list[float] = []
         self.steps: list[int] = []
 
+        self.val_losses_per_bit: dict[str, list[float]] = {}
+        self.val_accuracies_per_bit: dict[str, list[float]] = {}
+
     def on_train_epoch_end(self, trainer, pl_module):
         train_loss = trainer.logged_metrics.get("train_loss_epoch", None)
         if train_loss is not None:
@@ -42,6 +45,14 @@ class LossLoggerCallback(L.Callback):
         if val_acc is not None:
             self.val_accuracies.append(float(val_acc))
 
+        for key, value in trainer.logged_metrics.items():
+            if key.startswith("val_loss_channel_"):
+                ch = key.removeprefix("val_loss_")
+                self.val_losses_per_bit.setdefault(ch, []).append(float(value))
+            elif key.startswith("val_accuracy_channel_"):
+                ch = key.removeprefix("val_accuracy_")
+                self.val_accuracies_per_bit.setdefault(ch, []).append(float(value))
+
         self._save_losses()
 
     @rank_zero_only
@@ -54,6 +65,8 @@ class LossLoggerCallback(L.Callback):
             "val_losses": self.val_losses,
             "train_accuracies": self.train_accuracies,
             "val_accuracies": self.val_accuracies,
+            "val_losses_per_bit": self.val_losses_per_bit,
+            "val_accuracies_per_bit": self.val_accuracies_per_bit,
         }
 
         with open(os.path.join(self.save_dir, "training_losses.json"), "w") as f:

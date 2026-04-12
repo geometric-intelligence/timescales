@@ -44,7 +44,9 @@ FIG_DIR = os.path.join("notebooks", "figs", "schur")
 os.makedirs(FIG_DIR, exist_ok=True)
 
 # %% Specify sweep directory
-sweep_dir = "/home/facosta/timescales/timescales/logs/experiments/flip_flop_schur_sweep_20260410_020558"
+#sweep_dir = "/home/facosta/timescales/timescales/logs/experiments/flip_flop_schur_sweep_20260410_020558"
+
+sweep_dir = "/home/facosta/timescales/timescales/logs/experiments/flip_flop_schur_sweep_20260410_050424"
 
 # %% Parse condition labels from experiment names
 CONDITION_LABELS = {
@@ -277,8 +279,8 @@ def load_schur_model(seed_path: str) -> SchurRNN:
     return lit.model
 
 
-def get_jacobian_eigenvalues(model: SchurRNN) -> np.ndarray:
-    """Compute eigenvalues of J = Q T Q^T."""
+def get_jacobian_eigen(model: SchurRNN):
+    """Compute J = Q T Q^T and its eigendecomposition."""
     with torch.no_grad():
         Q = model.rnn_step._effective_Q()
         T = model.rnn_step.T
@@ -287,7 +289,9 @@ def get_jacobian_eigenvalues(model: SchurRNN) -> np.ndarray:
             J = Q @ T @ torch.linalg.solve(Q, I)
         else:
             J = Q @ T @ Q.T
-    return np.linalg.eigvals(J.cpu().numpy())
+    J_np = J.cpu().numpy()
+    eigenvalues, eigenvectors = np.linalg.eig(J_np)
+    return eigenvalues, eigenvectors, J_np
 
 
 # %% Compute eigenspectra
@@ -297,11 +301,27 @@ for _, row in df.iterrows():
     model = load_schur_model(row["seed_path"])
     if model is None:
         continue
-    eigs = get_jacobian_eigenvalues(model)
+    eigs, eigvecs, J = get_jacobian_eigen(model)
+
+    W_out = model.W_out.weight.detach().cpu().numpy()
+    W_in = model.rnn_step.W_in.weight.detach().cpu().numpy()
+
+    config_path = os.path.join(row["seed_path"], "run_config.yaml")
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f)
+    n_bits = cfg.get("n_bits", 3)
+    p_pulse = cfg.get("p_pulse", 0.05)
+
     eigen_records.append(dict(
         label=row["label"],
         seed=row["seed"],
         eigenvalues=eigs,
+        eigenvectors=eigvecs,
+        J=J,
+        W_out=W_out,
+        W_in=W_in,
+        n_bits=n_bits,
+        p_pulse=p_pulse,
     ))
 
 print(f"Loaded eigenspectra for {len(eigen_records)} models")
@@ -340,31 +360,7 @@ if eigen_records:
                     bbox_inches="tight", dpi=150)
     plt.show()
 
-# %% Plot 5: Eigenvalue magnitude distribution (histogram)
-if eigen_records:
-    fig, ax = plt.subplots(figsize=(8, 4))
-    for lab in COLORS:
-        recs = [r for r in eigen_records if r["label"] == lab]
-        if not recs:
-            continue
-        all_mags = np.concatenate([np.abs(r["eigenvalues"]) for r in recs])
-        ax.hist(all_mags, bins=50, alpha=0.5, density=True,
-                color=COLORS[lab], label=lab, edgecolor="none")
-
-    ax.axvline(1.0, color="black", linestyle=":", linewidth=0.8)
-    ax.set_xlabel("|$\\lambda$|", fontsize=12)
-    ax.set_ylabel("Density", fontsize=12)
-    ax.legend(fontsize=9)
-    ax.grid(True, alpha=0.3)
-    fig.suptitle("Eigenvalue Magnitude Distribution",
-                 fontsize=13, fontweight="bold", y=1.02)
-    plt.tight_layout()
-    if SAVE_FIGS:
-        fig.savefig(os.path.join(FIG_DIR, "schur_eigval_magnitudes.pdf"),
-                    bbox_inches="tight", dpi=150)
-    plt.show()
-
-# %% Plot 6: Effective timescale scree plot — tau_eff = -1/ln|lambda|
+# %% Plot 5: Effective timescale scree plot — tau_eff = -1/ln|lambda|
 if eigen_records:
     first_cfg = df.iloc[0]["run_config"] if len(df) > 0 else {}
     _n_bits = first_cfg.get("n_bits", 3)
@@ -444,6 +440,421 @@ if eigen_records:
         fig.savefig(os.path.join(FIG_DIR, "schur_tau_eff_scree.pdf"),
                     bbox_inches="tight", dpi=150)
     plt.show()
+
+# %% [markdown]
+# ## Mode-to-Output Coupling
+#
+# $|W_\text{out} V|$ tells us how much each eigenvector mode contributes to
+# each output bit.  We show a full heatmap across **all** modes (columns ranked
+# by $|\lambda|$) for every condition, so differences in coupling structure
+# between T-only, Q-only, Both, and Frozen are directly visible.
+
+# %% Plot 6: Mode-to-output coupling heatmap — |W_out @ V| across all modes
+if eigen_records:
+    condition_order_coupling = [
+        "T only (eigenvalues)",
+        "Q only (basis)",
+        "Both T & Q",
+        "Frozen $W_\\mathrm{rec}$",
+    ]
+    active_conds = [c for c in condition_order_coupling
+                    if any(r["label"] == c for r in eigen_records)]
+
+    for cond in active_conds:
+        recs = [r for r in eigen_records if r["label"] == cond]
+        if not recs:
+            continue
+        rec = recs[0]
+
+        eigs = rec["eigenvalues"]
+        V = rec["eigenvectors"]
+        W_out = rec["W_out"]
+        n_bits = rec["n_bits"]
+        pp = rec["p_pulse"]
+        pp_list = pp if isinstance(pp, list) else [pp] * n_bits
+        N = len(eigs)
+
+        abs_rank_order = np.argsort(np.abs(eigs))[::-1]
+        abs_ranked = np.abs(eigs[abs_rank_order])
+
+        log_abs = np.log(np.clip(abs_ranked, 1e-12, None))
+        tau_ranked = -1.0 / np.where(log_abs < -1e-10, log_abs, -1e-10)
+
+        coupling_all = np.abs(W_out @ V)
+        coupling_ranked = coupling_all[:, abs_rank_order]
+
+        # --- Output coupling heatmap ---
+        fig, ax = plt.subplots(figsize=(max(14, N * 0.12), max(n_bits * 0.7, 3)))
+        im = ax.imshow(coupling_ranked, cmap="YlOrRd", aspect="auto",
+                       interpolation="nearest")
+
+        ax.set_yticks(range(n_bits))
+        ax.set_yticklabels([f"Bit {i} (p={pp_list[i]})" for i in range(n_bits)],
+                           fontsize=9)
+        ax.set_xlabel("Eigenmode rank (by $|\\lambda|$)", fontsize=11)
+        ax.set_ylabel("Output bit", fontsize=11)
+
+        ax.axvline(n_bits - 0.5, color="white", linewidth=1.5, linestyle="--",
+                   alpha=0.8)
+
+        plt.colorbar(im, ax=ax, label="$|W_{\\mathrm{out}} V|$", shrink=0.8)
+        fig.suptitle(
+            f"Mode-to-Output Coupling — {cond}\n"
+            f"$|W_{{\\mathrm{{out}}}} V|$ across all {N} modes "
+            f"(dashed line = top {n_bits})",
+            fontsize=12, fontweight="bold", y=1.04,
+        )
+        plt.tight_layout()
+        if SAVE_FIGS:
+            safe = cond.replace(" ", "_").replace("$", "").replace("\\", "")
+            fig.savefig(os.path.join(FIG_DIR, f"schur_output_coupling_{safe}.pdf"),
+                        bbox_inches="tight", dpi=150)
+        plt.show()
+
+        # --- Input coupling heatmap: |V^{-1} W_in| ---
+        W_in = rec["W_in"]
+        V_inv = np.linalg.pinv(V)
+        input_coupling = np.abs(V_inv @ W_in)          # (N, n_bits)
+        input_coupling_ranked = input_coupling[abs_rank_order]
+
+        fig, ax = plt.subplots(figsize=(max(14, N * 0.12), max(n_bits * 0.7, 3)))
+        im = ax.imshow(input_coupling_ranked.T, cmap="YlGnBu", aspect="auto",
+                       interpolation="nearest")
+
+        ax.set_yticks(range(n_bits))
+        ax.set_yticklabels([f"Input {i} (p={pp_list[i]})" for i in range(n_bits)],
+                           fontsize=9)
+        ax.set_xlabel("Eigenmode rank (by $|\\lambda|$)", fontsize=11)
+        ax.set_ylabel("Input bit", fontsize=11)
+
+        ax.axvline(n_bits - 0.5, color="white", linewidth=1.5, linestyle="--",
+                   alpha=0.8)
+
+        plt.colorbar(im, ax=ax, label="$|V^{-1} W_{\\mathrm{in}}|$", shrink=0.8)
+        fig.suptitle(
+            f"Input-to-Mode Coupling — {cond}\n"
+            f"$|V^{{-1}} W_{{\\mathrm{{in}}}}|$ across all {N} modes "
+            f"(dashed line = top {n_bits})",
+            fontsize=12, fontweight="bold", y=1.04,
+        )
+        plt.tight_layout()
+        if SAVE_FIGS:
+            safe = cond.replace(" ", "_").replace("$", "").replace("\\", "")
+            fig.savefig(os.path.join(FIG_DIR, f"schur_input_coupling_{safe}.pdf"),
+                        bbox_inches="tight", dpi=150)
+        plt.show()
+
+        # Dominant mode per bit (top-n_bits only)
+        coupling_top = coupling_ranked[:, :n_bits]
+        dominant = np.argmax(coupling_top, axis=1)
+        print(f"\n{cond}: Dominant slow mode per output bit:")
+        for bit_i in range(n_bits):
+            mode_j = dominant[bit_i]
+            print(f"  Bit {bit_i} (p_pulse={pp_list[bit_i]}, "
+                  f"hold~{1.0/pp_list[bit_i]:.0f} steps)"
+                  f"  <--  Mode {mode_j+1} "
+                  f"(tau_eff={tau_ranked[mode_j]:.1f} steps)")
+
+# %% [markdown]
+# ## Alternative Memory Mechanisms
+#
+# Networks that don't learn slow eigenvalues (Frozen $W_\text{rec}$, Q-only)
+# may still solve the task through other mechanisms:
+#
+# 1. **Transient amplification** — non-normal $J$ can sustain signals
+#    longer than any single eigenvalue predicts ($\|J^k\| > \rho(J)^k$).
+# 2. **Henrici non-normality** — $\|J\|_F^2 - \sum|\lambda_i|^2$ measures
+#    how far $J$ is from being diagonalisable by a unitary.
+# 3. **Direct pathway** — structured $W_\text{out} W_\text{in}$ can bypass
+#    recurrent dynamics entirely.
+# 4. **Complex-pair subspace coupling** — conjugate pairs $\lambda = r e^{\pm i\theta}$
+#    create 2-D damped rotations; if $W_\text{in}$ and $W_\text{out}$ couple to the
+#    right phase, the network encodes bits through oscillatory dynamics.
+
+# %% Plot 8: Transient amplification — ||J^k||_2 vs k
+if eigen_records:
+    condition_order_alt = [
+        "T only (eigenvalues)",
+        "Q only (basis)",
+        "Both T & Q",
+        "Frozen $W_\\mathrm{rec}$",
+    ]
+    active_conds = [c for c in condition_order_alt
+                    if any(r["label"] == c for r in eigen_records)]
+
+    K_MAX = 300
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    for cond in active_conds:
+        rec = next(r for r in eigen_records if r["label"] == cond)
+        J = rec["J"]
+        eigs = rec["eigenvalues"]
+        rho = np.max(np.abs(eigs))
+
+        Jk = np.eye(J.shape[0])
+        norms = np.empty(K_MAX + 1)
+        norms[0] = np.linalg.norm(Jk, ord=2)
+        for k in range(1, K_MAX + 1):
+            Jk = Jk @ J
+            norms[k] = np.linalg.norm(Jk, ord=2)
+
+        ks = np.arange(K_MAX + 1)
+        ax.semilogy(ks, norms, linewidth=1.5, color=COLORS.get(cond, "gray"),
+                    label=cond)
+
+    ax.axhline(1.0, color="black", linestyle=":", linewidth=0.8, alpha=0.5)
+    ax.set_xlabel("$k$ (time steps)", fontsize=12)
+    ax.set_ylabel("$\\|J^k\\|_2$ (operator norm)", fontsize=12)
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.2)
+    ax.set_xlim(0, K_MAX)
+    fig.suptitle("Transient Amplification — $\\|J^k\\|_2$ vs $k$\n"
+                 "Non-normal matrices can amplify before decaying",
+                 fontsize=13, fontweight="bold", y=1.04)
+    plt.tight_layout()
+    if SAVE_FIGS:
+        fig.savefig(os.path.join(FIG_DIR, "schur_transient_amplification.pdf"),
+                    bbox_inches="tight", dpi=150)
+    plt.show()
+
+# %% Plot 8b: Input-to-output transient gain — ||W_out J^k W_in||_F
+# This is the quantity that actually matters for the task: how much does
+# a pulse at time 0 still influence the output at time k?
+if eigen_records:
+    fig, axes = plt.subplots(1, len(active_conds),
+                             figsize=(5 * len(active_conds), 4.5),
+                             squeeze=False, sharey=True)
+
+    for col, cond in enumerate(active_conds):
+        ax = axes[0, col]
+        rec = next(r for r in eigen_records if r["label"] == cond)
+        J = rec["J"]
+        W_out = rec["W_out"]
+        W_in = rec["W_in"]
+        n_bits = rec["n_bits"]
+        pp = rec["p_pulse"]
+        pp_list = pp if isinstance(pp, list) else [pp] * n_bits
+
+        Jk = np.eye(J.shape[0])
+        io_gain = np.empty((K_MAX + 1, n_bits, n_bits))
+        for k in range(K_MAX + 1):
+            G = W_out @ Jk @ W_in      # (n_bits, n_bits)
+            io_gain[k] = np.abs(G)
+            Jk = Jk @ J
+
+        ks = np.arange(K_MAX + 1)
+        for bit_i in range(n_bits):
+            ax.semilogy(ks, io_gain[:, bit_i, bit_i], linewidth=1.4,
+                        label=f"Bit {bit_i}→{bit_i} (p={pp_list[bit_i]})")
+
+        ax.axhline(io_gain[0].max() * 0.01, color="gray", linestyle=":",
+                   linewidth=0.6, alpha=0.5)
+        ax.set_xlabel("$k$ (delay steps)", fontsize=11)
+        if col == 0:
+            ax.set_ylabel("$|W_{\\mathrm{out}} J^k W_{\\mathrm{in}}|_{ii}$",
+                          fontsize=11)
+        ax.set_title(cond, fontsize=11, color=COLORS.get(cond, "black"))
+        ax.legend(fontsize=8, loc="upper right")
+        ax.grid(True, alpha=0.15)
+        ax.set_xlim(0, K_MAX)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+    fig.suptitle("Input→Output Transient Gain per Bit — $|W_{\\mathrm{out}} J^k W_{\\mathrm{in}}|$\n"
+                 "How long does each bit's signal persist?",
+                 fontsize=13, fontweight="bold", y=1.06)
+    plt.tight_layout()
+    if SAVE_FIGS:
+        fig.savefig(os.path.join(FIG_DIR, "schur_io_transient_gain.pdf"),
+                    bbox_inches="tight", dpi=150)
+    plt.show()
+
+# %% Non-normality & direct pathway summary table
+if eigen_records:
+    print("\n" + "=" * 75)
+    print("Non-normality & Direct Pathway Analysis")
+    print("=" * 75)
+
+    for cond in active_conds:
+        rec = next(r for r in eigen_records if r["label"] == cond)
+        J = rec["J"]
+        eigs = rec["eigenvalues"]
+        W_out = rec["W_out"]
+        W_in = rec["W_in"]
+        n_bits = rec["n_bits"]
+        N = J.shape[0]
+
+        # Henrici non-normality: ||J||_F^2 - sum|lambda_i|^2
+        frob_sq = np.linalg.norm(J, "fro") ** 2
+        eig_sq = np.sum(np.abs(eigs) ** 2)
+        henrici = np.sqrt(max(frob_sq - eig_sq, 0.0))
+        henrici_normed = henrici / np.linalg.norm(J, "fro")
+
+        # Spectral radius
+        rho = np.max(np.abs(eigs))
+
+        # Peak transient amplification
+        Jk = np.eye(N)
+        peak_norm = 1.0
+        for k in range(1, K_MAX + 1):
+            Jk = Jk @ J
+            peak_norm = max(peak_norm, np.linalg.norm(Jk, ord=2))
+
+        # Direct pathway
+        direct = W_out @ W_in      # (n_bits, n_bits)
+
+        print(f"\n  {cond}:")
+        print(f"    spectral radius ρ(J) = {rho:.4f}")
+        print(f"    Henrici non-normality = {henrici:.3f}  "
+              f"(normalised = {henrici_normed:.3f})")
+        print(f"    peak ||J^k||_2        = {peak_norm:.3f}  "
+              f"(amplification ratio = {peak_norm / max(rho, 1e-12):.2f}×)")
+        print(f"    direct pathway W_out @ W_in:")
+        for i in range(n_bits):
+            row_str = "  ".join(f"{direct[i, j]:+.4f}" for j in range(n_bits))
+            print(f"      bit {i}: [{row_str}]")
+
+# %% Plot 9: Direct pathway heatmap — W_out @ W_in
+if eigen_records:
+    n_conds = len(active_conds)
+    first_rec = next(r for r in eigen_records if r["label"] == active_conds[0])
+    n_bits = first_rec["n_bits"]
+    pp = first_rec["p_pulse"]
+    pp_list = pp if isinstance(pp, list) else [pp] * n_bits
+
+    fig, axes = plt.subplots(1, n_conds, figsize=(3.5 * n_conds, 3.2),
+                             squeeze=False)
+    vmax_all = 0
+    directs = {}
+    for cond in active_conds:
+        rec = next(r for r in eigen_records if r["label"] == cond)
+        d = rec["W_out"] @ rec["W_in"]
+        directs[cond] = d
+        vmax_all = max(vmax_all, np.abs(d).max())
+
+    for col, cond in enumerate(active_conds):
+        ax = axes[0, col]
+        d = directs[cond]
+        im = ax.imshow(d, cmap="RdBu_r", aspect="equal",
+                       vmin=-vmax_all, vmax=vmax_all)
+        ax.set_xticks(range(n_bits))
+        ax.set_xticklabels([f"In {i}" for i in range(n_bits)], fontsize=8)
+        ax.set_yticks(range(n_bits))
+        ax.set_yticklabels([f"Out {i}" for i in range(n_bits)], fontsize=8)
+        for i in range(n_bits):
+            for j in range(n_bits):
+                ax.text(j, i, f"{d[i,j]:.3f}", ha="center", va="center",
+                        fontsize=7,
+                        color="white" if abs(d[i,j]) > 0.6 * vmax_all else "black")
+        ax.set_title(cond, fontsize=10, color=COLORS.get(cond, "black"))
+
+    fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.8,
+                 label="$W_{\\mathrm{out}} W_{\\mathrm{in}}$")
+    fig.suptitle("Direct Pathway — $W_{\\mathrm{out}} W_{\\mathrm{in}}$\n"
+                 "Instantaneous input→output coupling (bypass of recurrence)",
+                 fontsize=12, fontweight="bold", y=1.06)
+    plt.tight_layout()
+    if SAVE_FIGS:
+        fig.savefig(os.path.join(FIG_DIR, "schur_direct_pathway.pdf"),
+                    bbox_inches="tight", dpi=150)
+    plt.show()
+
+# %% Plot 10: Complex conjugate pair subspace coupling
+# For each complex pair λ, λ* near |λ|≈1, the 2D invariant subspace is
+# spanned by Re(v) and Im(v).  We measure how strongly W_in and W_out
+# project into each such subspace.
+if eigen_records:
+    for cond in active_conds:
+        rec = next(r for r in eigen_records if r["label"] == cond)
+        eigs = rec["eigenvalues"]
+        V = rec["eigenvectors"]
+        W_out = rec["W_out"]
+        W_in = rec["W_in"]
+        n_bits = rec["n_bits"]
+        pp = rec["p_pulse"]
+        pp_list = pp if isinstance(pp, list) else [pp] * n_bits
+        N = len(eigs)
+
+        # Find complex conjugate pairs (positive imaginary part)
+        cpx_mask = np.abs(eigs.imag) > 1e-8
+        pos_imag = cpx_mask & (eigs.imag > 0)
+        pair_idx = np.where(pos_imag)[0]
+
+        if len(pair_idx) == 0:
+            print(f"{cond}: no complex pairs found")
+            continue
+
+        abs_pair = np.abs(eigs[pair_idx])
+        sort_order = np.argsort(abs_pair)[::-1]
+        pair_idx = pair_idx[sort_order]
+
+        n_pairs = min(20, len(pair_idx))
+        pair_idx = pair_idx[:n_pairs]
+
+        # For each pair, build orthonormal basis of the 2D subspace
+        in_coupling = np.zeros((n_pairs, n_bits))
+        out_coupling = np.zeros((n_pairs, n_bits))
+        pair_abs = np.zeros(n_pairs)
+        pair_freq = np.zeros(n_pairs)
+
+        for pi, idx in enumerate(pair_idx):
+            v = V[:, idx]
+            u1 = v.real.copy()
+            u2 = v.imag.copy()
+            # Gram-Schmidt
+            u1 /= np.linalg.norm(u1) + 1e-15
+            u2 -= u1 * np.dot(u1, u2)
+            u2 /= np.linalg.norm(u2) + 1e-15
+            P = np.outer(u1, u1) + np.outer(u2, u2)   # projector onto 2D subspace
+
+            for b in range(n_bits):
+                w_in_b = W_in[:, b]
+                in_coupling[pi, b] = np.linalg.norm(P @ w_in_b)
+                w_out_b = W_out[b, :]
+                out_coupling[pi, b] = np.linalg.norm(P @ w_out_b)
+
+            pair_abs[pi] = np.abs(eigs[idx])
+            pair_freq[pi] = np.abs(eigs[idx].imag) / (2 * np.pi)
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, max(n_pairs * 0.35, 3)))
+
+        ylabels = [f"|λ|={pair_abs[i]:.3f}, f={pair_freq[i]:.3f}"
+                   for i in range(n_pairs)]
+
+        im1 = ax1.imshow(in_coupling, cmap="YlGnBu", aspect="auto")
+        ax1.set_yticks(range(n_pairs))
+        ax1.set_yticklabels(ylabels, fontsize=7)
+        ax1.set_xticks(range(n_bits))
+        ax1.set_xticklabels([f"In {i}" for i in range(n_bits)], fontsize=9)
+        ax1.set_xlabel("Input bit", fontsize=11)
+        ax1.set_ylabel("Complex pair (ranked by $|\\lambda|$)", fontsize=10)
+        ax1.set_title("$\\|P_{\\lambda} \\, w_{\\mathrm{in}}^{(i)}\\|$",
+                      fontsize=11)
+        plt.colorbar(im1, ax=ax1, shrink=0.8)
+
+        im2 = ax2.imshow(out_coupling, cmap="YlOrRd", aspect="auto")
+        ax2.set_yticks(range(n_pairs))
+        ax2.set_yticklabels(ylabels, fontsize=7)
+        ax2.set_xticks(range(n_bits))
+        ax2.set_xticklabels([f"Out {i}" for i in range(n_bits)], fontsize=9)
+        ax2.set_xlabel("Output bit", fontsize=11)
+        ax2.set_title("$\\|P_{\\lambda} \\, w_{\\mathrm{out}}^{(i)}\\|$",
+                      fontsize=11)
+        plt.colorbar(im2, ax=ax2, shrink=0.8)
+
+        fig.suptitle(
+            f"Complex Pair Subspace Coupling — {cond}\n"
+            f"Top {n_pairs} conjugate pairs: how strongly does each 2D "
+            f"invariant subspace couple to inputs/outputs?",
+            fontsize=12, fontweight="bold", y=1.06,
+        )
+        plt.tight_layout()
+        if SAVE_FIGS:
+            safe = cond.replace(" ", "_").replace("$", "").replace("\\", "")
+            fig.savefig(os.path.join(FIG_DIR,
+                        f"schur_complex_pair_coupling_{safe}.pdf"),
+                        bbox_inches="tight", dpi=150)
+        plt.show()
 
 # %% [markdown]
 # ## Example Trajectories
