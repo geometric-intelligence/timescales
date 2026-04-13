@@ -349,6 +349,54 @@ if SAVE_FIGS:
                 bbox_inches="tight", dpi=150)
 plt.show()
 
+# %% Plot 5b: Zoomed eigenvalue spectra (near unit circle)
+ZOOM_XLIM = (0.85, 1.05)
+ZOOM_YLIM = (-0.15, 0.15)
+
+fig, axes = plt.subplots(nrows, ncols, figsize=(4.5 * ncols, 4 * nrows),
+                         squeeze=False)
+
+for idx, g in enumerate(sorted(eig_data.keys())):
+    ax = axes[idx // ncols, idx % ncols]
+    eigs = eig_data[g]["eigs"]
+    abs_eigs = np.abs(eigs)
+    n_bits_g = eig_data[g]["n_bits"]
+    rho = np.max(abs_eigs)
+
+    ax.plot(np.cos(theta), np.sin(theta), "k--", linewidth=0.5, alpha=0.4)
+    ax.axhline(0, color="#bbb", linewidth=0.3, zorder=0)
+    ax.axvline(0, color="#bbb", linewidth=0.3, zorder=0)
+
+    top_idx = np.argsort(abs_eigs)[-n_bits_g:]
+    rest_idx = np.argsort(abs_eigs)[:-n_bits_g]
+
+    ax.scatter(eigs.real[rest_idx], eigs.imag[rest_idx], s=15, alpha=0.6,
+               color=COLORS[g], edgecolors="none", zorder=3)
+    ax.scatter(eigs.real[top_idx], eigs.imag[top_idx], s=25, alpha=0.95,
+               color=COLORS[g], edgecolors="black", linewidths=0.5,
+               zorder=4, label=f"Top {n_bits_g}")
+
+    ax.set_xlim(*ZOOM_XLIM)
+    ax.set_ylim(*ZOOM_YLIM)
+    ax.set_title(f"$g = {g}$, $\\rho = {rho:.4f}$", fontsize=10)
+    ax.set_xlabel("Re", fontsize=9)
+    ax.set_ylabel("Im", fontsize=9)
+    ax.grid(True, alpha=0.15)
+
+for idx in range(n_g, nrows * ncols):
+    axes[idx // ncols, idx % ncols].set_visible(False)
+
+if n_g > 0:
+    axes[0, 0].legend(fontsize=8, loc="upper left", framealpha=0.7)
+
+fig.suptitle("Eigenspectra (zoom) — Frozen $W_{\\mathrm{rec}}$, varying $g$",
+             fontsize=14, fontweight="bold", y=1.02)
+plt.tight_layout()
+if SAVE_FIGS:
+    fig.savefig(os.path.join(FIGS_DIR, "reservoir_eigenspectra_zoom.pdf"),
+                bbox_inches="tight", dpi=150)
+plt.show()
+
 # %% Plot 6: Effective timescale scree plot per gain
 _sample = next(iter(eig_data.values()))
 _pp = _sample["p_pulse"]
@@ -406,7 +454,116 @@ if SAVE_FIGS:
                 bbox_inches="tight", dpi=150)
 plt.show()
 
+# %% Plot 6b: PCA dimensionality of latent dynamics
+PCA_GAIN = 0.8#gains[-1]   # which network to analyze
+PCA_N_TRAJ = 100
 
+_pca_row = df[df["gain"] == PCA_GAIN].iloc[0]
+_pca_seed_path = _pca_row["seed_path"]
+_pca_cfg_file = os.path.join(_pca_seed_path, "run_config.yaml")
+with open(_pca_cfg_file) as f:
+    _pca_cfg = yaml.safe_load(f)
+
+_pca_ckpts = glob.glob(os.path.join(_pca_seed_path, "checkpoints", "best-model-*.ckpt"))
+assert _pca_ckpts, f"No checkpoint found for g={PCA_GAIN}"
+
+_pca_model = RNN(
+    input_size=_pca_cfg["n_bits"],
+    hidden_size=_pca_cfg["hidden_size"],
+    output_size=_pca_cfg["n_bits"],
+    dt=_pca_cfg["dt"],
+    time_constants_config=_pca_cfg.get("time_constants_config"),
+    activation=getattr(nn, _pca_cfg["activation"]),
+    learn_time_constants=_pca_cfg["learn_time_constants"],
+    init_time_constant=_pca_cfg.get("init_time_constant"),
+    shared_time_constant=_pca_cfg["shared_time_constant"],
+    normalize_hidden=_pca_cfg["normalize_hidden"],
+    zero_diag_wrec=_pca_cfg["zero_diag_wrec"],
+    recurrent_gain=_pca_cfg["recurrent_gain"],
+    noise_std=0.0,
+    wrec_init=_pca_cfg["wrec_init"],
+    alpha_parameterization=_pca_cfg["alpha_parameterization"],
+    dynamics_type=_pca_cfg["dynamics_type"],
+)
+_pca_lit = RNNLightning(
+    model=_pca_model,
+    learning_rate=_pca_cfg["learning_rate"],
+    weight_decay=_pca_cfg["weight_decay"],
+    step_size=_pca_cfg.get("lr_step_size", _pca_cfg.get("step_size", 1000)),
+    gamma=_pca_cfg["gamma"],
+    task="flip_flop",
+)
+_pca_ckpt = torch.load(_pca_ckpts[0], map_location=device, weights_only=False)
+_pca_lit.load_state_dict(_pca_ckpt["state_dict"])
+_pca_lit.eval().to(device)
+
+_pca_dm = FlipFlopDataModule(
+    n_bits=_pca_cfg["n_bits"],
+    p_pulse=_pca_cfg["p_pulse"],
+    pulse_amplitude=_pca_cfg["pulse_amplitude"],
+    num_time_steps=_pca_cfg["num_time_steps"],
+    num_val_trajectories=PCA_N_TRAJ,
+    batch_size=PCA_N_TRAJ,
+)
+_pca_dm.setup()
+_pca_inp, _, _ = _pca_dm.val_dataset.tensors
+
+with torch.no_grad():
+    _pca_h_seq, _ = _pca_lit.model(_pca_inp.to(device), init_context=None)
+    _pca_h = _pca_h_seq.cpu().numpy()   # (n_traj, T, hidden_size)
+
+_pca_n_traj, _pca_T, _pca_H = _pca_h.shape
+_pca_data = _pca_h.reshape(-1, _pca_H)  # (n_traj * T, hidden_size)
+_pca_data -= _pca_data.mean(axis=0, keepdims=True)
+
+from numpy.linalg import svd as _svd
+_, _pca_s, _ = _svd(_pca_data, full_matrices=False)
+_pca_var = _pca_s ** 2
+_pca_var_frac = _pca_var / _pca_var.sum()
+_pca_cum = np.cumsum(_pca_var_frac)
+
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 4.5))
+
+MAX_COMP_SHOW = min(60, len(_pca_cum))
+ax1.plot(np.arange(1, MAX_COMP_SHOW + 1), _pca_cum[:MAX_COMP_SHOW],
+         "o-", markersize=4, linewidth=1.5, color="#264653")
+for thresh in [0.90, 0.95, 0.99]:
+    n_needed = int(np.searchsorted(_pca_cum, thresh)) + 1
+    ax1.axhline(thresh, color="#adb5bd", linewidth=0.8, linestyle=":")
+    ax1.annotate(f"{thresh*100:.0f}% \u2192 {n_needed} PCs",
+                 xy=(n_needed, thresh),
+                 textcoords="offset points", xytext=(8, -10),
+                 fontsize=9, color="#e76f51", fontweight="bold",
+                 arrowprops=dict(arrowstyle="->", color="#e76f51", lw=0.8))
+ax1.set_xlabel("Number of principal components", fontsize=12)
+ax1.set_ylabel("Cumulative variance explained", fontsize=12)
+ax1.set_ylim(0, 1.02)
+ax1.set_xlim(0, MAX_COMP_SHOW + 1)
+ax1.grid(True, alpha=0.2)
+ax1.set_title("Cumulative variance explained", fontsize=12)
+
+ax2.bar(np.arange(1, MAX_COMP_SHOW + 1), _pca_var_frac[:MAX_COMP_SHOW],
+        color="#2a9d8f", edgecolor="none", alpha=0.8)
+ax2.set_xlabel("Principal component", fontsize=12)
+ax2.set_ylabel("Fraction of variance", fontsize=12)
+ax2.set_xlim(0, MAX_COMP_SHOW + 1)
+ax2.grid(True, alpha=0.2, axis="y")
+ax2.set_title("Variance per component", fontsize=12)
+
+fig.suptitle(f"PCA Dimensionality — Reservoir g={PCA_GAIN}, "
+             f"{PCA_N_TRAJ} traj, N={_pca_H}, n_bits={_pca_cfg['n_bits']}",
+             fontsize=13, fontweight="bold", y=1.03)
+plt.tight_layout()
+if SAVE_FIGS:
+    fig.savefig(os.path.join(FIGS_DIR, f"reservoir_pca_dimensionality_g{PCA_GAIN}.pdf"),
+                bbox_inches="tight", dpi=150)
+plt.show()
+
+print(f"\nPCA summary for g={PCA_GAIN}:")
+print(f"  Data matrix: {_pca_data.shape[0]} points x {_pca_data.shape[1]} dims")
+for thresh in [0.80, 0.90, 0.95, 0.99]:
+    n_needed = int(np.searchsorted(_pca_cum, thresh)) + 1
+    print(f"  {thresh*100:.0f}% variance -> {n_needed} PCs")
 
 
 
@@ -729,7 +886,7 @@ for g in sorted(eig_data.keys()):
 # Options:
 INCLUDE_REAL = False      # include real eigenvalues (θ=0 or π)
 USE_THETA_TAU = False     # x-axis: True = θ·τ, False = |θ|
-USE_INV_THETA = True     # x-axis: True = 1/|θ| (rotational timescale), overrides USE_THETA_TAU
+USE_INV_THETA = False     # x-axis: True = 1/|θ| (rotational timescale), overrides USE_THETA_TAU
 PER_BIT = False           # True = one subplot per bit, False = max across bits
 COUPLING_VS_TAU = True    # also produce coupling vs τ_eff scatter
 

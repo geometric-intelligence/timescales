@@ -1,12 +1,12 @@
 # %% [markdown]
 # # Tanh Heterogeneous Flip-Flop — Gain Sweep Analysis
 #
-# 6-bit flip-flop with heterogeneous `p_pulse` and **Tanh** activation.
+# N-bit flip-flop with heterogeneous `p_pulse` and **Tanh** activation.
 # We sweep the recurrent gain $g$ across values that span from overdamped
 # ($g < 1$) to supercritical ($g > 1$); tanh saturation keeps dynamics
 # bounded even for $g > 1$.
 #
-# **Key analyses:**
+# **Main analyses:**
 # 1. Training curves (loss / accuracy) and per-bit accuracy
 # 2. Fixed-point finding via L-BFGS at each gain
 # 3. Jacobian eigendecomposition at each fixed point
@@ -18,12 +18,12 @@ import sys
 import subprocess
 import json
 import glob
+import time
 
 import yaml
 import numpy as np
+from scipy.optimize import minimize as sp_minimize
 import matplotlib.pyplot as plt
-import matplotlib.cm as cm
-import matplotlib.colors as mcolors
 from matplotlib.lines import Line2D
 import pandas as pd
 import torch
@@ -115,8 +115,8 @@ gains = sorted(df["gain"].unique())
 print(f"Loaded {len(df)} runs, gains: {gains}")
 
 # %% Color palette
-_palette = plt.cm.viridis(np.linspace(0.15, 0.95, len(gains)))
-COLORS = {g: _palette[i] for i, g in enumerate(gains)}
+palette = plt.cm.viridis(np.linspace(0.15, 0.95, len(gains)))
+COLORS = {g: palette[i] for i, g in enumerate(gains)}
 
 # %% Plot 1: Validation loss vs training step
 fig, ax = plt.subplots(figsize=(10, 5))
@@ -298,18 +298,15 @@ else:
 # ## Fixed-Point Analysis
 #
 # For a Tanh rate network, the state update is:
-# $$x_{t+1} = (1-\alpha) x_t + \alpha \tanh(g W_\text{rec} x_t + W_\text{in} u_t + b)$$
+# $$r_{t+1} = (1-\alpha) r_t + \alpha \tanh(g W_\text{rec} r_t + W_\text{in} u_t + b)$$
 #
 # At a fixed point $x^*$ with zero input ($u = 0$), we have:
-# $$x^* = (1-\alpha) x^* + \alpha \tanh(g W_\text{rec} x^* + b)$$
-# $$\Leftrightarrow \quad x^* = \tanh(g W_\text{rec} x^* + b)  \quad
-# \text{(when } \alpha \text{ cancels)}$$
+# $$r^* = (1-\alpha) r^* + \alpha \tanh(g W_\text{rec} r^* + b)$$
+# $$\Leftrightarrow \quad r^* = \tanh(g W_\text{rec} r^* + b)$$
 #
-# We find these by minimising $q(r) = \|r - \tanh(g W_\text{rec} r + b)\|^2$.
+# We find these by minimizing $q(r) = \|r - \tanh(g W_\text{rec} r + b)\|^2$.
 
 # %% Fixed-point finding — all gains
-import time as _time
-
 N_FP_INITS = 100
 FP_CLUSTER_THRESH = 0.1
 FP_MAXITER = 1500
@@ -317,9 +314,9 @@ GAINS_TO_FIND_FP = [0.7]  # None = all gains; or set e.g. [0.95, 1.0, 1.2, 1.5]
 
 fp_data = {}
 
-_gains_to_find = gains if GAINS_TO_FIND_FP is None else [g for g in GAINS_TO_FIND_FP if g in set(df["gain"])]
+gains_to_find = gains if GAINS_TO_FIND_FP is None else [g for g in GAINS_TO_FIND_FP if g in set(df["gain"])]
 
-for g in _gains_to_find:
+for g in gains_to_find:
     sub = df[df["gain"] == g]
     if sub.empty:
         continue
@@ -408,11 +405,11 @@ for g in _gains_to_find:
     inp, _, tgt = dm.val_dataset.tensors
 
     print(f"g={g}: generating trajectory initial conditions on {device} ...")
-    t_fwd = _time.time()
+    t_fwd = time.time()
     with torch.no_grad():
         h_seq, _ = lit.model(inp.to(device), init_context=None)
         hidden_all = h_seq.cpu().numpy().reshape(-1, N)
-    print(f"  forward pass done in {_time.time()-t_fwd:.1f}s")
+    print(f"  forward pass done in {time.time()-t_fwd:.1f}s")
 
     rng = np.random.RandomState(42)
     n_inits = min(N_FP_INITS, len(hidden_all))
@@ -431,25 +428,23 @@ for g in _gains_to_find:
         sech2 = 1.0 - act ** 2
         return res - gW_T @ (sech2 * res)
 
-    from scipy.optimize import minimize as sp_minimize
-
     print(f"g={g}: running {len(init_points)} independent L-BFGS inits "
           f"(N={N}, maxiter={FP_MAXITER}) ...")
-    t0 = _time.time()
+    t0 = time.time()
     converged = []
-    _report_every = max(1, len(init_points) // 10)
+    report_every = max(1, len(init_points) // 10)
     for ii, r0 in enumerate(init_points):
         res = sp_minimize(_fp_speed, r0, jac=_fp_grad, method="L-BFGS-B",
                           options={"maxiter": FP_MAXITER, "ftol": 1e-14,
                                    "gtol": 1e-10})
         if res.fun < 1e-10:
             converged.append(res.x)
-        if (ii + 1) % _report_every == 0:
-            elapsed = _time.time() - t0
+        if (ii + 1) % report_every == 0:
+            elapsed = time.time() - t0
             print(f"  [{ii+1}/{len(init_points)}] {elapsed:.1f}s elapsed, "
                   f"{len(converged)} converged so far")
 
-    elapsed = _time.time() - t0
+    elapsed = time.time() - t0
     print(f"  done in {elapsed:.1f}s — {len(converged)}/{len(init_points)} converged")
 
     if not converged:
@@ -487,7 +482,7 @@ for g in _gains_to_find:
 # %% Print fixed-point summary table
 print(f"\n{'g':>5s} {'#FPs':>5s}  Labels")
 print("-" * 50)
-for g in _gains_to_find:
+for g in gains_to_find:
     if g not in fp_data:
         continue
     d = fp_data[g]
@@ -496,7 +491,7 @@ for g in _gains_to_find:
           + (" ..." if n_fp > 20 else ""))
 
 # %% Jacobian eigendecomposition at a selected fixed point
-TAU_VIS_MAX = 2000
+TAU_VIS_MAX = None  # upper cap on τ_eff for plots; None = no cap
 FP_GAIN = 0.7   # which gain to analyze
 FP_IDX = 0      # which fixed point (index into fp_data[FP_GAIN]["fps"])
 
@@ -504,37 +499,37 @@ assert FP_GAIN in fp_data and len(fp_data[FP_GAIN]["fps"]) > FP_IDX, \
     f"FP_GAIN={FP_GAIN}, FP_IDX={FP_IDX} not available. " \
     f"Available: {[(g, len(fp_data[g]['fps'])) for g in fp_data]}"
 
-_d = fp_data[FP_GAIN]
-_r_star = _d["fps"][FP_IDX]
-_gW = _d["gW"]
-_bias = _d["bias"]
-_alpha = _d["alpha"]
-_N = _d["N"]
-_fp_label = _d["labels"][FP_IDX]
+fp_info = fp_data[FP_GAIN]
+r_star = fp_info["fps"][FP_IDX]
+gW_fp = fp_info["gW"]
+bias_fp = fp_info["bias"]
+alpha_fp = fp_info["alpha"]
+N_fp = fp_info["N"]
+fp_label = fp_info["labels"][FP_IDX]
 
-_pre = _gW @ _r_star + _bias
-_sech2 = 1.0 - np.tanh(_pre) ** 2
-J = np.diag(np.full(_N, 1 - _alpha)) + _alpha * np.diag(_sech2) @ _gW
+pre = gW_fp @ r_star + bias_fp
+sech2 = 1.0 - np.tanh(pre) ** 2
+J = np.diag(np.full(N_fp, 1 - alpha_fp)) + alpha_fp * np.diag(sech2) @ gW_fp
 jac_eigs, jac_vecs = np.linalg.eig(J)
 
-_abs_eigs = np.abs(jac_eigs)
-_log_abs = np.log(np.clip(_abs_eigs, 1e-12, None))
-jac_tau_eff = -1.0 / np.clip(_log_abs, None, -1e-10)
+abs_eigs = np.abs(jac_eigs)
+log_abs = np.log(np.clip(abs_eigs, 1e-12, None))
+jac_tau_eff = -1.0 / np.clip(log_abs, None, -1e-10)
 
-_fp_output = None
-if _d["W_out"] is not None:
-    _logit = _d["W_out"] @ _r_star + (_d["b_out"] if _d["b_out"] is not None else 0)
-    _fp_output = 1.0 / (1.0 + np.exp(-_logit))
+fp_output = None
+if fp_info["W_out"] is not None:
+    logit = fp_info["W_out"] @ r_star + (fp_info["b_out"] if fp_info["b_out"] is not None else 0)
+    fp_output = 1.0 / (1.0 + np.exp(-logit))
 
 print(f"=== Jacobian at FP {FP_IDX} (g={FP_GAIN}) ===")
-print(f"  Label: {_fp_label}")
-if _fp_output is not None:
-    print(f"  Output (σ): [{', '.join(f'{v:.3f}' for v in _fp_output)}]")
-print(f"  ||r*|| = {np.linalg.norm(_r_star):.4f}")
-print(f"  q(r*) = {np.sum((_r_star - np.tanh(_gW @ _r_star + _bias))**2)/2:.2e}")
-print(f"  Top-5 |λ|: {np.sort(_abs_eigs)[-5:][::-1]}")
+print(f"  Label: {fp_label}")
+if fp_output is not None:
+    print(f"  Output (σ): [{', '.join(f'{v:.3f}' for v in fp_output)}]")
+print(f"  ||r*|| = {np.linalg.norm(r_star):.4f}")
+print(f"  q(r*) = {np.sum((r_star - np.tanh(gW_fp @ r_star + bias_fp))**2)/2:.2e}")
+print(f"  Top-5 |λ|: {np.sort(abs_eigs)[-5:][::-1]}")
 print(f"  Top-5 τ_eff: {np.sort(np.clip(jac_tau_eff, 0, TAU_VIS_MAX))[-5:][::-1]}")
-print(f"  # eigs with |λ| > 0.99: {np.sum(_abs_eigs > 0.99)}")
+print(f"  # eigs with |λ| > 0.99: {np.sum(abs_eigs > 0.99)}")
 print(f"  # modes with τ ≥ longest hold ({holds[0]:.0f}): "
       f"{np.sum(np.clip(jac_tau_eff, 0, TAU_VIS_MAX) >= holds[0])}")
 
@@ -549,7 +544,7 @@ ax.axhline(0, color="gray", linewidth=0.3)
 ax.axvline(0, color="gray", linewidth=0.3)
 
 top_k = 20
-top_idx = np.argsort(_abs_eigs)[-top_k:]
+top_idx = np.argsort(abs_eigs)[-top_k:]
 
 ax.scatter(jac_eigs.real, jac_eigs.imag, s=8, color="#bbb",
            alpha=0.4, edgecolors="none", rasterized=True, label="all")
@@ -559,7 +554,7 @@ ax.scatter(jac_eigs[top_idx].real, jac_eigs[top_idx].imag,
            label=f"top-{top_k} by |λ|")
 
 ax.set_title(f"Jacobian Eigenspectrum — g={FP_GAIN}, FP {FP_IDX}: "
-             f"{_fp_label}", fontsize=12, fontweight="bold")
+             f"{fp_label}", fontsize=12, fontweight="bold")
 ax.set_xlabel("Re(λ)", fontsize=11)
 ax.set_ylabel("Im(λ)", fontsize=11)
 ax.set_aspect("equal")
@@ -588,8 +583,8 @@ for bi in range(n_bits):
 ax.set_xlabel("Eigenmode rank", fontsize=12)
 ax.set_ylabel("$\\tau_{\\mathrm{eff}}$", fontsize=13)
 ax.set_yscale("log")
-ax.set_title(f"τ_eff Scree — g={FP_GAIN}, FP {FP_IDX}: {_fp_label}\n"
-             f"(capped at {TAU_VIS_MAX})",
+cap_str = f" (capped at {TAU_VIS_MAX})" if TAU_VIS_MAX is not None else ""
+ax.set_title(f"τ_eff Scree — g={FP_GAIN}, FP {FP_IDX}: {fp_label}{cap_str}",
              fontsize=12, fontweight="bold")
 ax.grid(True, alpha=0.15)
 ax.legend(fontsize=8, loc="upper right")
@@ -602,7 +597,7 @@ plt.show()
 
 # %% Plot 8: |λ| rank
 fig, ax = plt.subplots(figsize=(10, 4))
-abs_sorted = np.sort(_abs_eigs)[::-1]
+abs_sorted = np.sort(abs_eigs)[::-1]
 ranks = np.arange(1, len(abs_sorted) + 1)
 ax.plot(ranks, abs_sorted, linewidth=1.5, color="#264653")
 ax.axhline(1.0, color="red", linestyle=":", linewidth=1, alpha=0.5,
@@ -610,7 +605,7 @@ ax.axhline(1.0, color="red", linestyle=":", linewidth=1, alpha=0.5,
 
 ax.set_xlabel("Eigenmode rank", fontsize=12)
 ax.set_ylabel("$|\\lambda|$", fontsize=13)
-ax.set_title(f"|λ| Rank — g={FP_GAIN}, FP {FP_IDX}: {_fp_label}",
+ax.set_title(f"|λ| Rank — g={FP_GAIN}, FP {FP_IDX}: {fp_label}",
              fontsize=12, fontweight="bold")
 ax.grid(True, alpha=0.15)
 ax.legend(fontsize=9)
@@ -628,7 +623,7 @@ if fp_data:
     summary_max_tau = []
     summary_n_above = {bi: [] for bi in range(n_bits)}
 
-    for g in _gains_to_find:
+    for g in gains_to_find:
         if g not in fp_data or len(fp_data[g].get("jac_eigs", [])) == 0:
             continue
         d = fp_data[g]
