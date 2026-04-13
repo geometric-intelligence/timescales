@@ -14,8 +14,6 @@ class CoupledRNNStep(nn.Module):
       r_new = (1 - alpha_r) r + alpha_r phi(W_rec r + W_in u + V s)
       s_new = (1 - alpha_s) s + alpha_s (W_s s + U r)
 
-    Both updates use the "old" r, s (symmetric / parallel evaluation).
-
     Trainable: W_rec, W_in, V, U.   W_s fixed by default (trainable_w_s=True to learn it).
     """
 

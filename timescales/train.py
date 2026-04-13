@@ -420,6 +420,14 @@ def single_seed(config: dict) -> dict:
     # Model
     factory = MODEL_FACTORIES[model_type]
     model, lightning_module = factory(config)
+
+    if config.get("freeze_wrec", False) and hasattr(model, "rnn_step"):
+        wrec = getattr(model.rnn_step, "W_rec", None)
+        if wrec is not None:
+            for p in wrec.parameters():
+                p.requires_grad_(False)
+            print("  freeze_wrec=True — W_rec frozen (only W_in, W_out train)")
+
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"  Model: {model.__class__.__name__}, trainable params: {n_params}")
 
