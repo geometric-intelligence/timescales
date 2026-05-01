@@ -44,9 +44,9 @@ FIG_DIR = os.path.join("notebooks", "figs", "schur")
 os.makedirs(FIG_DIR, exist_ok=True)
 
 # %% Specify sweep directory
-#sweep_dir = "/home/facosta/timescales/timescales/logs/experiments/flip_flop_schur_sweep_20260410_020558"
+sweep_dir = "/home/facosta/timescales/timescales/logs/experiments/flip_flop_schur_sweep_20260410_020558"
 
-sweep_dir = "/home/facosta/timescales/timescales/logs/experiments/flip_flop_schur_sweep_20260410_050424"
+#sweep_dir = "/home/facosta/timescales/timescales/logs/experiments/flip_flop_schur_sweep_20260410_050424"
 
 # %% Parse condition labels from experiment names
 CONDITION_LABELS = {

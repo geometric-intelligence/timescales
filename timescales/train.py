@@ -38,6 +38,7 @@ from timescales.datamodules import (
     FlipFlopDataModule,
     NullDataModule,
     TeacherStudentDataModule,
+    SineWaveDataModule,
 )
 
 log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "logs"))
@@ -153,6 +154,22 @@ def create_datamodule(config: dict):
         config["input_size"] = datamodule.input_size
         config["output_size"] = datamodule.output_size
 
+    elif task == "sine_wave":
+        datamodule = SineWaveDataModule(
+            n_pairs=config.get("n_pairs", 1),
+            periods=config.get("periods", config.get("period", 10.0)),
+            dt=config["dt"],
+            num_time_steps=config["num_time_steps"],
+            init_hidden_value=config.get("init_hidden_value", 1.0),
+            random_phase=config.get("random_phase", False),
+            num_val_trajectories=config.get("num_val_trajectories", 200),
+            batch_size=config["batch_size"],
+            num_workers=config["num_workers"],
+        )
+        config["input_size"] = datamodule.input_size
+        config["output_size"] = datamodule.output_size
+        config["init_hidden_value"] = datamodule.init_hidden_value
+
     elif task == "null":
         datamodule = NullDataModule(
             input_size=config.get("input_size", 1),
@@ -215,6 +232,7 @@ def _create_rnn_model(config: dict):
         precondition_gradients=config.get("precondition_gradients", False),
         eps_alpha=config.get("eps_alpha", 1e-2),
         lr_interval=lr_interval,
+        init_hidden_value=config.get("init_hidden_value"),
     )
     return model, lightning_module
 

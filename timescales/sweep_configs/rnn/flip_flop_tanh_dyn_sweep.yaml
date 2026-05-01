@@ -1,0 +1,192 @@
+# Flip-Flop — Tanh activation, Rate vs Voltage dynamics, Learnable vs Fixed τ
+#
+# 6-bit heterogeneous flip-flop (p_pulse = [0.005, 0.007, 0.01, 0.02, 0.05, 0.1]).
+# Extends flip_flop_learn_tau_sweep.yaml to Tanh activation and adds a
+# dynamics_type axis (rate vs voltage), enabling four comparisons:
+#   Fixed τ / Rate  |  Fixed τ / Voltage
+#   Learn τ / Rate  |  Learn τ / Voltage
+#
+# Gain range extended to supercritical (g > 1) because Tanh saturation keeps
+# the network bounded even above the linear stability threshold.
+#
+# Total: 5 gains × 2 dynamics × 2 conditions × 1 seed = 20 runs
+
+base_config: "configs/rnn/flip_flop.yaml"
+n_seeds: 1
+
+fixed_overrides:
+  hidden_size: 512
+  activation: "Tanh"
+  wrec_init: "normal_scaled"
+  zero_diag_wrec: false
+  shared_time_constant: false
+  n_bits: 6
+  p_pulse: [0.005, 0.007, 0.01, 0.02, 0.05, 0.1]
+  num_time_steps: 1000
+  max_steps: 3000
+  alpha_parameterization: "exponential"
+
+experiments:
+  # ── Rate dynamics, Fixed τ = 1 ────────────────────────────────────────────
+  - name: "g_0.5_dyn_rate_learn_tau_False"
+    overrides:
+      recurrent_gain: 0.5
+      dynamics_type: "rate"
+      learn_time_constants: false
+      time_constants_config:
+        type: "discrete"
+        values: [1.0]
+
+  - name: "g_0.7_dyn_rate_learn_tau_False"
+    overrides:
+      recurrent_gain: 0.7
+      dynamics_type: "rate"
+      learn_time_constants: false
+      time_constants_config:
+        type: "discrete"
+        values: [1.0]
+
+  - name: "g_0.9_dyn_rate_learn_tau_False"
+    overrides:
+      recurrent_gain: 0.9
+      dynamics_type: "rate"
+      learn_time_constants: false
+      time_constants_config:
+        type: "discrete"
+        values: [1.0]
+
+  - name: "g_1.1_dyn_rate_learn_tau_False"
+    overrides:
+      recurrent_gain: 1.1
+      dynamics_type: "rate"
+      learn_time_constants: false
+      time_constants_config:
+        type: "discrete"
+        values: [1.0]
+
+  - name: "g_1.3_dyn_rate_learn_tau_False"
+    overrides:
+      recurrent_gain: 1.3
+      dynamics_type: "rate"
+      learn_time_constants: false
+      time_constants_config:
+        type: "discrete"
+        values: [1.0]
+
+  # ── Rate dynamics, Learnable τ (init = 1) ─────────────────────────────────
+  - name: "g_0.5_dyn_rate_learn_tau_True"
+    overrides:
+      recurrent_gain: 0.5
+      dynamics_type: "rate"
+      learn_time_constants: true
+      init_time_constant: 1.0
+
+  - name: "g_0.7_dyn_rate_learn_tau_True"
+    overrides:
+      recurrent_gain: 0.7
+      dynamics_type: "rate"
+      learn_time_constants: true
+      init_time_constant: 1.0
+
+  - name: "g_0.9_dyn_rate_learn_tau_True"
+    overrides:
+      recurrent_gain: 0.9
+      dynamics_type: "rate"
+      learn_time_constants: true
+      init_time_constant: 1.0
+
+  - name: "g_1.1_dyn_rate_learn_tau_True"
+    overrides:
+      recurrent_gain: 1.1
+      dynamics_type: "rate"
+      learn_time_constants: true
+      init_time_constant: 1.0
+
+  - name: "g_1.3_dyn_rate_learn_tau_True"
+    overrides:
+      recurrent_gain: 1.3
+      dynamics_type: "rate"
+      learn_time_constants: true
+      init_time_constant: 1.0
+
+  # ── Voltage dynamics, Fixed τ = 1 ─────────────────────────────────────────
+  - name: "g_0.5_dyn_voltage_learn_tau_False"
+    overrides:
+      recurrent_gain: 0.5
+      dynamics_type: "voltage"
+      learn_time_constants: false
+      time_constants_config:
+        type: "discrete"
+        values: [1.0]
+
+  - name: "g_0.7_dyn_voltage_learn_tau_False"
+    overrides:
+      recurrent_gain: 0.7
+      dynamics_type: "voltage"
+      learn_time_constants: false
+      time_constants_config:
+        type: "discrete"
+        values: [1.0]
+
+  - name: "g_0.9_dyn_voltage_learn_tau_False"
+    overrides:
+      recurrent_gain: 0.9
+      dynamics_type: "voltage"
+      learn_time_constants: false
+      time_constants_config:
+        type: "discrete"
+        values: [1.0]
+
+  - name: "g_1.1_dyn_voltage_learn_tau_False"
+    overrides:
+      recurrent_gain: 1.1
+      dynamics_type: "voltage"
+      learn_time_constants: false
+      time_constants_config:
+        type: "discrete"
+        values: [1.0]
+
+  - name: "g_1.3_dyn_voltage_learn_tau_False"
+    overrides:
+      recurrent_gain: 1.3
+      dynamics_type: "voltage"
+      learn_time_constants: false
+      time_constants_config:
+        type: "discrete"
+        values: [1.0]
+
+  # ── Voltage dynamics, Learnable τ (init = 1) ──────────────────────────────
+  - name: "g_0.5_dyn_voltage_learn_tau_True"
+    overrides:
+      recurrent_gain: 0.5
+      dynamics_type: "voltage"
+      learn_time_constants: true
+      init_time_constant: 1.0
+
+  - name: "g_0.7_dyn_voltage_learn_tau_True"
+    overrides:
+      recurrent_gain: 0.7
+      dynamics_type: "voltage"
+      learn_time_constants: true
+      init_time_constant: 1.0
+
+  - name: "g_0.9_dyn_voltage_learn_tau_True"
+    overrides:
+      recurrent_gain: 0.9
+      dynamics_type: "voltage"
+      learn_time_constants: true
+      init_time_constant: 1.0
+
+  - name: "g_1.1_dyn_voltage_learn_tau_True"
+    overrides:
+      recurrent_gain: 1.1
+      dynamics_type: "voltage"
+      learn_time_constants: true
+      init_time_constant: 1.0
+
+  - name: "g_1.3_dyn_voltage_learn_tau_True"
+    overrides:
+      recurrent_gain: 1.3
+      dynamics_type: "voltage"
+      learn_time_constants: true
+      init_time_constant: 1.0

@@ -48,7 +48,7 @@ FIGS_DIR = os.path.join("notebooks", "figs", "tanh_hetero")
 os.makedirs(FIGS_DIR, exist_ok=True)
 
 # %% Specify sweep directory
-sweep_dir = "/home/facosta/timescales/timescales/logs/experiments/flip_flop_hetero_ppulse_tanh_20260412_010247"
+sweep_dir = "/home/facosta/timescales/timescales/logs/experiments/flip_flop_hetero_ppulse_tanh_20260413_175256"
 
 # %% Load data and training curves
 records = []
@@ -307,10 +307,14 @@ else:
 # We find these by minimizing $q(r) = \|r - \tanh(g W_\text{rec} r + b)\|^2$.
 
 # %% Fixed-point finding — all gains
-N_FP_INITS = 100
-FP_CLUSTER_THRESH = 0.1
-FP_MAXITER = 1500
-GAINS_TO_FIND_FP = [0.7]  # None = all gains; or set e.g. [0.95, 1.0, 1.2, 1.5]
+N_FP_INITS = 500
+N_RANDOM_INITS = 200       # additional random Gaussian inits to cover saddle points
+FP_CLUSTER_THRESH = 1.0
+FP_MAXITER = 5000
+FP_FTOL = 1e-20
+FP_GTOL = 1e-12
+FP_Q_THRESH = 1e-10        # max q(r) to count as converged
+GAINS_TO_FIND_FP = None    # None = all gains; or set e.g. [0.95, 1.0, 1.2, 1.5]
 
 fp_data = {}
 
@@ -412,9 +416,16 @@ for g in gains_to_find:
     print(f"  forward pass done in {time.time()-t_fwd:.1f}s")
 
     rng = np.random.RandomState(42)
-    n_inits = min(N_FP_INITS, len(hidden_all))
-    init_idx = rng.choice(len(hidden_all), size=n_inits, replace=False)
-    init_points = np.vstack([np.zeros((1, N)), hidden_all[init_idx]])
+    n_traj_inits = min(N_FP_INITS, len(hidden_all))
+    init_idx = rng.choice(len(hidden_all), size=n_traj_inits, replace=False)
+    traj_inits = hidden_all[init_idx]
+
+    h_std = hidden_all.std()
+    random_inits = rng.randn(N_RANDOM_INITS, N).astype(np.float64) * h_std
+
+    init_points = np.vstack([np.zeros((1, N)), traj_inits, random_inits])
+    print(f"  {len(init_points)} inits: 1 origin + {n_traj_inits} trajectory "
+          f"+ {N_RANDOM_INITS} random")
 
     gW_T = gW.T.copy()
 
@@ -435,9 +446,9 @@ for g in gains_to_find:
     report_every = max(1, len(init_points) // 10)
     for ii, r0 in enumerate(init_points):
         res = sp_minimize(_fp_speed, r0, jac=_fp_grad, method="L-BFGS-B",
-                          options={"maxiter": FP_MAXITER, "ftol": 1e-14,
-                                   "gtol": 1e-10})
-        if res.fun < 1e-10:
+                          options={"maxiter": FP_MAXITER, "ftol": FP_FTOL,
+                                   "gtol": FP_GTOL})
+        if res.fun < FP_Q_THRESH:
             converged.append(res.x)
         if (ii + 1) % report_every == 0:
             elapsed = time.time() - t0
@@ -463,6 +474,15 @@ for g in gains_to_find:
             unique_fps.append(r)
     unique_fps = np.array(unique_fps)
 
+    if len(unique_fps) > 1:
+        from scipy.spatial.distance import pdist
+        pw = pdist(unique_fps)
+        print(f"  pairwise distances: min={pw.min():.3f}, "
+              f"median={np.median(pw):.3f}, max={pw.max():.3f}")
+        if pw.min() < 2 * FP_CLUSTER_THRESH:
+            print(f"  ⚠ closest pair ({pw.min():.3f}) < 2×thresh "
+                  f"({2*FP_CLUSTER_THRESH:.3f}) — consider raising threshold")
+
     labels = []
     if W_out is not None:
         for r in unique_fps:
@@ -472,27 +492,109 @@ for g in gains_to_find:
     else:
         labels = [str(i) for i in range(len(unique_fps))]
 
-    print(f"g={g}: {len(converged)}/{len(init_points)} converged → "
-          f"{len(unique_fps)} unique FPs  labels: {labels}")
+    is_stable = []
+    for r in unique_fps:
+        pre_r = gW @ r + bias
+        sech2_r = 1.0 - np.tanh(pre_r) ** 2
+        J_r = np.diag(np.full(N, 1 - alpha)) + alpha * np.diag(sech2_r) @ gW
+        max_abs_eig = np.max(np.abs(np.linalg.eigvals(J_r)))
+        is_stable.append(max_abs_eig < 1.0)
 
-    fp_data[g] = dict(fps=unique_fps, labels=labels, W_out=W_out,
-                      b_out=b_out, gW=gW, bias=bias, alpha=alpha, N=N,
-                      W_in=W_in, rc=rc)
+    n_stable = sum(is_stable)
+    n_unstable = len(is_stable) - n_stable
+    n_distinct_labels = len(set(labels))
+    print(f"g={g}: {len(converged)}/{len(init_points)} converged → "
+          f"{len(unique_fps)} unique FPs ({n_stable} stable, {n_unstable} unstable, "
+          f"{n_distinct_labels} distinct labels)")
+
+    fp_data[g] = dict(fps=unique_fps, labels=labels, is_stable=is_stable,
+                      W_out=W_out, b_out=b_out, gW=gW, bias=bias,
+                      alpha=alpha, N=N, W_in=W_in, rc=rc,
+                      hidden_all=hidden_all)
 
 # %% Print fixed-point summary table
-print(f"\n{'g':>5s} {'#FPs':>5s}  Labels")
-print("-" * 50)
+print(f"\n{'g':>5s} {'#FPs':>5s} {'stable':>6s} {'unst.':>5s} {'#labels':>7s}  Labels")
+print("-" * 80)
 for g in gains_to_find:
     if g not in fp_data:
         continue
     d = fp_data[g]
     n_fp = len(d["fps"])
-    print(f"{g:5.2f} {n_fp:5d}  {', '.join(d['labels'][:20])}"
-          + (" ..." if n_fp > 20 else ""))
+    n_st = sum(d["is_stable"])
+    n_un = n_fp - n_st
+    n_labels = len(set(d["labels"]))
+    lab_parts = []
+    for i, lab in enumerate(d["labels"][:30]):
+        marker = "" if d["is_stable"][i] else "*"
+        lab_parts.append(f"{lab}{marker}")
+    suffix = " ..." if n_fp > 30 else ""
+    print(f"{g:5.2f} {n_fp:5d} {n_st:6d} {n_un:5d} {n_labels:7d}  "
+          f"{', '.join(lab_parts)}{suffix}")
+print("(* = unstable)")
+
+# %% Plot: 3D PCA projection of fixed points and trajectories
+from sklearn.decomposition import PCA
+
+FP_VIS_GAIN = gains_to_find[0]  # which gain to visualize; change as needed
+
+assert FP_VIS_GAIN in fp_data and len(fp_data[FP_VIS_GAIN]["fps"]) > 0, \
+    f"No FPs for g={FP_VIS_GAIN}"
+
+d_vis = fp_data[FP_VIS_GAIN]
+fps_vis = d_vis["fps"]
+labels_vis = d_vis["labels"]
+stable_vis = d_vis["is_stable"]
+hidden_vis = d_vis["hidden_all"]
+
+pca = PCA(n_components=3)
+pca.fit(hidden_vis)
+var_explained = pca.explained_variance_ratio_
+
+fps_pca = pca.transform(fps_vis)
+traj_pca = pca.transform(hidden_vis)
+
+fig = plt.figure(figsize=(9, 7))
+ax = fig.add_subplot(111, projection="3d")
+
+ax.scatter(traj_pca[::5, 0], traj_pca[::5, 1], traj_pca[::5, 2],
+           s=0.3, alpha=0.04, c="#999", depthshade=False, rasterized=True)
+
+stable_mask = np.array(stable_vis)
+if stable_mask.any():
+    ax.scatter(fps_pca[stable_mask, 0], fps_pca[stable_mask, 1],
+               fps_pca[stable_mask, 2],
+               s=120, c="#2a9d8f", edgecolors="black", linewidths=1,
+               zorder=5, label="stable")
+if (~stable_mask).any():
+    ax.scatter(fps_pca[~stable_mask, 0], fps_pca[~stable_mask, 1],
+               fps_pca[~stable_mask, 2],
+               s=80, c="#e76f51", edgecolors="black", linewidths=0.8,
+               marker="^", zorder=5, label="unstable")
+
+for i, lab in enumerate(labels_vis):
+    ax.text(fps_pca[i, 0], fps_pca[i, 1], fps_pca[i, 2],
+            f"  {lab}", fontsize=7, zorder=6)
+
+ax.set_xlabel(f"PC1 ({var_explained[0]:.1%})", fontsize=10)
+ax.set_ylabel(f"PC2 ({var_explained[1]:.1%})", fontsize=10)
+ax.set_zlabel(f"PC3 ({var_explained[2]:.1%})", fontsize=10)
+total_var = var_explained[:3].sum()
+ax.set_title(f"Fixed Points in PCA Space — g={FP_VIS_GAIN}\n"
+             f"{len(fps_vis)} FPs ({sum(stable_vis)} stable, "
+             f"{len(fps_vis)-sum(stable_vis)} unstable), "
+             f"3 PCs explain {total_var:.1%} variance",
+             fontsize=11, fontweight="bold")
+ax.legend(fontsize=9, loc="upper left")
+plt.tight_layout()
+if SAVE_FIGS:
+    fig.savefig(os.path.join(FIGS_DIR,
+                f"tanh_fp_pca_g{FP_VIS_GAIN}.pdf"),
+                bbox_inches="tight", dpi=150)
+plt.show()
 
 # %% Jacobian eigendecomposition at a selected fixed point
 TAU_VIS_MAX = None  # upper cap on τ_eff for plots; None = no cap
-FP_GAIN = 0.7   # which gain to analyze
+FP_GAIN = 0.5   # which gain to analyze
 FP_IDX = 0      # which fixed point (index into fp_data[FP_GAIN]["fps"])
 
 assert FP_GAIN in fp_data and len(fp_data[FP_GAIN]["fps"]) > FP_IDX, \

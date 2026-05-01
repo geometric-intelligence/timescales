@@ -1,0 +1,42 @@
+# Sine-Wave Generation -- Heterogeneous Periods, Training-Horizon Sweep
+#
+# Vary num_time_steps with dt=1.0 fixed -- this directly varies the number
+# of cycles of the slowest target period seen during training.
+#
+# Periods = [20, 50, 100], so slow-period cycles = num_time_steps / 100
+# in {1, 2, 5, 10, 20, 40}.
+#
+# Hypothesis: more cycles seen -> more constraint on periodicity ->
+# eigenvalue placement becomes the parsimonious solution.  Expect a
+# sharpish onset of generalisation around 5-10 slow-period cycles.
+#
+# Total: 6 num_time_steps x 1 seed = 6 runs
+
+base_config: "configs/rnn/sine_wave.yaml"
+n_seeds: 1
+
+fixed_overrides:
+  hidden_size: 128
+  recurrent_gain: 0.98
+  weight_decay: 0.0001
+  max_steps: 2000
+  val_every_n_steps: 10
+  lr_step_size: 2500
+  activation: "Identity"
+  n_pairs: 3
+  periods: [20.0, 50.0, 100.0]
+  dt: 1.0
+  init_hidden_value: 1.0
+  track_gradients: false
+
+grid:
+  num_time_steps:
+    - 100      # 1 slow cycle
+    - 200      # 2 slow cycles
+    - 500      # 5 slow cycles
+    - 1000     # 10 slow cycles
+    - 2000     # 20 slow cycles
+    - 4000     # 40 slow cycles
+
+naming:
+  format: "T_{num_time_steps}"

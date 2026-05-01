@@ -358,12 +358,16 @@ class RNN(nn.Module):
         self,
         inputs: torch.Tensor,
         init_context: torch.Tensor | None = None,
+        init_hidden: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass through the RNN.
 
         :param inputs: (batch, time, input_size)
-        :param init_context: (batch, output_size) - optional context to initialize hidden state.
+        :param init_context: (batch, output_size) - optional context mapped through
+            W_h_init to produce the initial hidden state.
+        :param init_hidden: (batch, hidden_size) - optional raw initial hidden state,
+            used directly (bypasses W_h_init). Takes precedence over init_context.
         :return: hidden_states: (batch, time, hidden_size)
         :return: outputs: (batch, time, output_size)
         """
@@ -371,7 +375,9 @@ class RNN(nn.Module):
 
         hidden_states = []
         outputs = []
-        if init_context is not None:
+        if init_hidden is not None:
+            hidden = init_hidden
+        elif init_context is not None:
             hidden = self.W_h_init(init_context)
         else:
             hidden = torch.zeros(batch_size, self.hidden_size, device=inputs.device)
@@ -450,6 +456,7 @@ class RNNLightning(L.LightningModule):
         precondition_gradients: bool = False,
         eps_alpha: float = 1e-2,
         lr_interval: str = "epoch",
+        init_hidden_value: float | None = None,
     ) -> None:
         """
         :param model: The RNN model.
@@ -461,6 +468,8 @@ class RNNLightning(L.LightningModule):
         :param precondition_gradients: If True, apply alpha-based gradient preconditioning.
         :param eps_alpha: Damping constant for numerical stability in preconditioner.
         :param lr_interval: LR scheduler interval — "epoch" or "step".
+        :param init_hidden_value: If set, initialize all hidden units to this
+            scalar value instead of zeros (used by sine_wave task).
         """
         super().__init__()
         self.model = model
@@ -472,10 +481,11 @@ class RNNLightning(L.LightningModule):
         self.precondition_gradients = precondition_gradients
         self.eps_alpha = eps_alpha
         self.lr_interval = lr_interval
+        self.init_hidden_value = init_hidden_value
         
         if task in ("binary_counter", "flip_flop"):
             self.loss_fn = nn.BCEWithLogitsLoss(reduction='none')
-        elif task == "teacher_student":
+        elif task in ("teacher_student", "sine_wave"):
             self.loss_fn = nn.MSELoss(reduction='none')
 
         if precondition_gradients:
@@ -501,7 +511,7 @@ class RNNLightning(L.LightningModule):
                 for i in range(n_channels)
             }
             return total_loss, per_channel_dict
-        elif self.task == "teacher_student":
+        elif self.task in ("teacher_student", "sine_wave"):
             batch_size, seq_len, n_channels = outputs.shape
             outputs_flat = outputs.reshape(-1, n_channels)
             targets_flat = targets.reshape(-1, n_channels)
@@ -533,7 +543,7 @@ class RNNLightning(L.LightningModule):
             tgt_idx = targets.reshape(-1, self.model.output_size).argmax(dim=-1)
             acc = (pred_idx == tgt_idx).float().mean()
             return acc, None
-        elif self.task == "teacher_student":
+        elif self.task in ("teacher_student", "sine_wave"):
             mse = ((outputs - targets) ** 2).mean()
             var = targets.var()
             r_squared = 1.0 - mse / (var + 1e-8)
@@ -546,16 +556,25 @@ class RNNLightning(L.LightningModule):
         else:
             return None, None
 
+    def _get_init_kwargs(self, inputs, targets):
+        """Build init_context / init_hidden kwargs for the forward pass."""
+        if self.task in ("path_integration", "path_integration_1d"):
+            return {"init_context": targets[:, 0, :]}
+        if self.init_hidden_value is not None:
+            batch_size = inputs.shape[0]
+            init_h = torch.full(
+                (batch_size, self.model.hidden_size),
+                self.init_hidden_value,
+                device=inputs.device,
+            )
+            return {"init_hidden": init_h}
+        return {}
+
     def training_step(self, batch) -> torch.Tensor:
         inputs, aux_info, targets = batch
-        
-        if self.task in ("path_integration", "path_integration_1d"):
-            init_context = targets[:, 0, :]
-        else:
-            init_context = None
-            
+
         hidden_states, outputs = self.model(
-            inputs=inputs, init_context=init_context
+            inputs=inputs, **self._get_init_kwargs(inputs, targets)
         )
 
         loss, per_channel_losses = self._compute_loss(outputs, targets)
@@ -578,14 +597,9 @@ class RNNLightning(L.LightningModule):
 
     def validation_step(self, batch) -> torch.Tensor:
         inputs, aux_info, targets = batch
-        
-        if self.task in ("path_integration", "path_integration_1d"):
-            init_context = targets[:, 0, :]
-        else:
-            init_context = None
-            
+
         hidden_states, outputs = self.model(
-            inputs=inputs, init_context=init_context
+            inputs=inputs, **self._get_init_kwargs(inputs, targets)
         )
 
         loss, per_channel_losses = self._compute_loss(outputs, targets)
