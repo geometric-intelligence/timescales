@@ -1,0 +1,58 @@
+# Sine-Wave Generation Task Configuration
+# Autonomous oscillation: the network generates N (cos, sin) pairs at
+# specified periods with no external input, starting from a uniform
+# initial hidden state r_0 = init_hidden_value.
+
+# General settings
+project_name: "sine_wave"
+model_type: "rnn"
+task: "sine_wave"
+seed: 0
+
+# Device configuration
+accelerator: "gpu"
+devices: "auto"
+
+# Task parameters
+n_pairs: 1                        # number of (cos, sin) output pairs
+periods: 10.0                     # period(s); scalar or list of length n_pairs
+init_hidden_value: 1.0            # r_0 for all neurons
+random_phase: false
+
+# Trajectory parameters
+num_time_steps: 200
+dt: 0.1
+
+# Model parameters
+hidden_size: 256
+activation: "Tanh"
+
+# Time constant configuration
+learn_time_constants: false
+time_constants_config:
+  type: "discrete"
+  values: [1.0]
+shared_time_constant: false
+normalize_hidden: false
+zero_diag_wrec: false
+recurrent_gain: 1.0
+noise_std: 0.0
+wrec_init: "normal_scaled"
+alpha_parameterization: "exponential"
+dynamics_type: "rate"
+
+# Training parameters (step-based)
+learning_rate: 0.001
+weight_decay: 0.0001
+max_steps: 3000
+val_every_n_steps: 10
+lr_step_size: 1500
+gamma: 0.5
+batch_size: 64
+num_val_trajectories: 200
+num_workers: 4
+
+# Logging
+viz_log_every_n_steps: 500
+grad_log_every_n_steps: 100
+grad_track_per_weight_matrix: true

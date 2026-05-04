@@ -1,0 +1,88 @@
+# Flip-Flop — Learnable vs Fixed Time Constants
+#
+# 6-bit heterogeneous flip-flop (p_pulse = [0.005, 0.007, 0.01, 0.02, 0.05, 0.1]),
+# Identity activation, fully-trainable W_rec (normal_scaled init).
+#
+# Two conditions (fixed vs learnable tau), crossed with 4 gain values.
+# Both conditions initialise all time constants at τ=1 so the only difference
+# is whether tau can move during training.
+#
+# Experiments format used (not grid) because the two conditions require
+# different top-level config keys.
+#
+# Total: 4 gains × 2 conditions × 1 seed = 8 runs
+
+base_config: "configs/rnn/flip_flop.yaml"
+n_seeds: 1
+
+fixed_overrides:
+  hidden_size: 512
+  activation: "Identity"
+  wrec_init: "normal_scaled"
+  zero_diag_wrec: false
+  shared_time_constant: false
+  n_bits: 6
+  p_pulse: [0.005, 0.007, 0.01, 0.02, 0.05, 0.1]
+  num_time_steps: 1000
+  max_steps: 3000
+  dynamics_type: "rate"
+  alpha_parameterization: "exponential"
+
+experiments:
+  # ── Fixed τ = 1 ──────────────────────────────────────────────────────────
+  - name: "g_0.6_learn_tau_False"
+    overrides:
+      recurrent_gain: 0.6
+      learn_time_constants: false
+      time_constants_config:
+        type: "discrete"
+        values: [1.0]
+
+  - name: "g_0.7_learn_tau_False"
+    overrides:
+      recurrent_gain: 0.7
+      learn_time_constants: false
+      time_constants_config:
+        type: "discrete"
+        values: [1.0]
+
+  - name: "g_0.8_learn_tau_False"
+    overrides:
+      recurrent_gain: 0.8
+      learn_time_constants: false
+      time_constants_config:
+        type: "discrete"
+        values: [1.0]
+
+  - name: "g_0.9_learn_tau_False"
+    overrides:
+      recurrent_gain: 0.9
+      learn_time_constants: false
+      time_constants_config:
+        type: "discrete"
+        values: [1.0]
+
+  # ── Learnable τ (per-neuron, init = 1) ───────────────────────────────────
+  - name: "g_0.6_learn_tau_True"
+    overrides:
+      recurrent_gain: 0.6
+      learn_time_constants: true
+      init_time_constant: 1.0
+
+  - name: "g_0.7_learn_tau_True"
+    overrides:
+      recurrent_gain: 0.7
+      learn_time_constants: true
+      init_time_constant: 1.0
+
+  - name: "g_0.8_learn_tau_True"
+    overrides:
+      recurrent_gain: 0.8
+      learn_time_constants: true
+      init_time_constant: 1.0
+
+  - name: "g_0.9_learn_tau_True"
+    overrides:
+      recurrent_gain: 0.9
+      learn_time_constants: true
+      init_time_constant: 1.0

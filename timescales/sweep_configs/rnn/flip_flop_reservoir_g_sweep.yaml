@@ -9,7 +9,7 @@
 # Total: 12 gain values × 3 seeds = 36 runs
 
 base_config: "configs/rnn/flip_flop.yaml"
-n_seeds: 3
+n_seeds: 4
 
 fixed_overrides:
   hidden_size: 512
@@ -21,25 +21,13 @@ fixed_overrides:
   n_bits: 6
   dynamics_type: "rate"
   activation: "Identity"
-  p_pulse: [0.005, 0.01, 0.02, 0.05, 0.1, 0.15]
+  p_pulse: [0.005, 0.007, 0.01, 0.02, 0.05, 0.1]
   num_time_steps: 1000
   freeze_wrec: true
-  track_gradients: true
 
 grid:
   recurrent_gain:
     - 0.5
-    - 0.6
-    - 0.7
-    - 0.8
-    - 0.85
-    - 0.9
-    - 0.93
-    - 0.95
-    - 0.97
-    - 0.99
-    - 1.0
-    - 1.05
 
 naming:
   format: "g_{recurrent_gain}"

@@ -19,6 +19,7 @@ class RNNStep(nn.Module):
         activation: type[nn.Module] = nn.Tanh,
         learn_time_constants: bool = False,
         init_time_constant: float | None = None,
+        init_log_tau_tensor: torch.Tensor | None = None,
         shared_time_constant: bool = False,
         normalize_hidden: bool = False,
         zero_diag_wrec: bool = True,
@@ -36,7 +37,11 @@ class RNNStep(nn.Module):
         :param activation: The activation function.
         :param learn_time_constants: If True, time constants become trainable parameters.
         :param init_time_constant: If provided and learn_time_constants=True, initialize all time constants
-                              to this value (uniform initialization). If None, use random init.
+                              to this value (uniform initialization). Ignored if init_log_tau_tensor
+                              is provided.
+        :param init_log_tau_tensor: If provided and learn_time_constants=True, initialize
+                              log_time_constants directly from this tensor (shape: hidden_size,).
+                              Takes precedence over init_time_constant.
         :param shared_time_constant: If True and learn_time_constants=True, use a single shared time constant
                                 for all neurons instead of per-neuron time constants.
         :param normalize_hidden: If True, apply LayerNorm to hidden state after each step.
@@ -73,19 +78,22 @@ class RNNStep(nn.Module):
         self.register_buffer("_dt_val", torch.tensor(dt))
 
         if learn_time_constants:
-            if init_time_constant is not None:
+            if init_log_tau_tensor is not None:
+                # Distribution-based init supplied by caller (e.g. power-law)
+                log_time_constants = init_log_tau_tensor.float()
+            elif init_time_constant is not None:
                 init_log_tau = float(torch.log(torch.tensor(init_time_constant)))
+                if shared_time_constant:
+                    log_time_constants = torch.tensor([init_log_tau])
+                else:
+                    log_time_constants = torch.full((hidden_size,), init_log_tau)
             else:
                 init_log_tau = -0.5  # ~0.6s default
-            
-            if shared_time_constant:
-                log_time_constants = torch.tensor([init_log_tau])
-            else:
-                if init_time_constant is not None:
-                    log_time_constants = torch.full((hidden_size,), init_log_tau)
+                if shared_time_constant:
+                    log_time_constants = torch.tensor([init_log_tau])
                 else:
                     log_time_constants = torch.randn(hidden_size) * 0.5 - 0.5
-            
+
             self.log_time_constants = nn.Parameter(log_time_constants)
         else:
             if time_constants is None:
@@ -204,6 +212,7 @@ class RNN(nn.Module):
         activation: type[nn.Module] = nn.Tanh,
         learn_time_constants: bool = False,
         init_time_constant: float | None = None,
+        init_time_constants_config: dict | None = None,
         shared_time_constant: bool = False,
         normalize_hidden: bool = False,
         zero_diag_wrec: bool = False,
@@ -219,13 +228,17 @@ class RNN(nn.Module):
         :param hidden_size: The size of the hidden state (number of neurons).
         :param output_size: The size of the output vector.
         :param dt: The time step size.
-        :param time_constants_config: Dictionary specifying how to set the time constants.
+        :param time_constants_config: Dictionary specifying how to set fixed time constants.
                                   Only used when learn_time_constants=False.
         :param activation: The activation function.
-        :param learn_time_constants: If True, time constants become trainable parameters
-                                 (randomly initialized, time_constants_config is ignored).
+        :param learn_time_constants: If True, time constants become trainable parameters.
         :param init_time_constant: If provided and learn_time_constants=True, initialize all 
-                              time constants to this value (uniform). If None, use random init.
+                              time constants to this scalar value (uniform). Ignored when
+                              init_time_constants_config is provided.
+        :param init_time_constants_config: If provided and learn_time_constants=True, sample
+                              initial tau values from this distribution (same format as
+                              time_constants_config: type/distribution/min/max/exponent keys).
+                              Takes precedence over init_time_constant.
         :param shared_time_constant: If True and learn_time_constants=True, use a single shared
                                 time constant for all neurons instead of per-neuron time constants.
         :param normalize_hidden: If True, apply LayerNorm to hidden state after each step.
@@ -254,9 +267,17 @@ class RNN(nn.Module):
         self.stability_param = stability_param
         self.wrec_init = wrec_init
 
+        # Build initial log-tau tensor (only for learnable case)
+        init_log_tau_tensor = None
         if learn_time_constants:
             time_constants = None
-            if shared_time_constant:
+            if init_time_constants_config is not None:
+                init_taus = self._generate_time_constants(hidden_size, init_time_constants_config)
+                init_log_tau_tensor = torch.log(init_taus)
+                cfg_desc = (f"distribution init: {init_time_constants_config.get('distribution', 'n/a')}, "
+                            f"tau in [{init_taus.min():.2f}, {init_taus.max():.2f}]")
+                print(f"Time constants are LEARNABLE (per-neuron, {cfg_desc})")
+            elif shared_time_constant:
                 print(f"Time constants are LEARNABLE (SHARED, init at τ={init_time_constant}s)")
             elif init_time_constant is not None:
                 print(f"Time constants are LEARNABLE (per-neuron, uniform init at τ={init_time_constant}s)")
@@ -275,6 +296,7 @@ class RNN(nn.Module):
             activation=activation,
             learn_time_constants=learn_time_constants,
             init_time_constant=init_time_constant,
+            init_log_tau_tensor=init_log_tau_tensor,
             shared_time_constant=shared_time_constant,
             normalize_hidden=normalize_hidden,
             zero_diag_wrec=zero_diag_wrec,
@@ -358,12 +380,16 @@ class RNN(nn.Module):
         self,
         inputs: torch.Tensor,
         init_context: torch.Tensor | None = None,
+        init_hidden: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass through the RNN.
 
         :param inputs: (batch, time, input_size)
-        :param init_context: (batch, output_size) - optional context to initialize hidden state.
+        :param init_context: (batch, output_size) - optional context mapped through
+            W_h_init to produce the initial hidden state.
+        :param init_hidden: (batch, hidden_size) - optional raw initial hidden state,
+            used directly (bypasses W_h_init). Takes precedence over init_context.
         :return: hidden_states: (batch, time, hidden_size)
         :return: outputs: (batch, time, output_size)
         """
@@ -371,7 +397,9 @@ class RNN(nn.Module):
 
         hidden_states = []
         outputs = []
-        if init_context is not None:
+        if init_hidden is not None:
+            hidden = init_hidden
+        elif init_context is not None:
             hidden = self.W_h_init(init_context)
         else:
             hidden = torch.zeros(batch_size, self.hidden_size, device=inputs.device)
@@ -450,6 +478,7 @@ class RNNLightning(L.LightningModule):
         precondition_gradients: bool = False,
         eps_alpha: float = 1e-2,
         lr_interval: str = "epoch",
+        init_hidden_value: float | None = None,
     ) -> None:
         """
         :param model: The RNN model.
@@ -461,6 +490,8 @@ class RNNLightning(L.LightningModule):
         :param precondition_gradients: If True, apply alpha-based gradient preconditioning.
         :param eps_alpha: Damping constant for numerical stability in preconditioner.
         :param lr_interval: LR scheduler interval — "epoch" or "step".
+        :param init_hidden_value: If set, initialize all hidden units to this
+            scalar value instead of zeros (used by sine_wave task).
         """
         super().__init__()
         self.model = model
@@ -472,10 +503,11 @@ class RNNLightning(L.LightningModule):
         self.precondition_gradients = precondition_gradients
         self.eps_alpha = eps_alpha
         self.lr_interval = lr_interval
+        self.init_hidden_value = init_hidden_value
         
         if task in ("binary_counter", "flip_flop"):
             self.loss_fn = nn.BCEWithLogitsLoss(reduction='none')
-        elif task == "teacher_student":
+        elif task in ("teacher_student", "sine_wave"):
             self.loss_fn = nn.MSELoss(reduction='none')
 
         if precondition_gradients:
@@ -501,7 +533,7 @@ class RNNLightning(L.LightningModule):
                 for i in range(n_channels)
             }
             return total_loss, per_channel_dict
-        elif self.task == "teacher_student":
+        elif self.task in ("teacher_student", "sine_wave"):
             batch_size, seq_len, n_channels = outputs.shape
             outputs_flat = outputs.reshape(-1, n_channels)
             targets_flat = targets.reshape(-1, n_channels)
@@ -533,7 +565,7 @@ class RNNLightning(L.LightningModule):
             tgt_idx = targets.reshape(-1, self.model.output_size).argmax(dim=-1)
             acc = (pred_idx == tgt_idx).float().mean()
             return acc, None
-        elif self.task == "teacher_student":
+        elif self.task in ("teacher_student", "sine_wave"):
             mse = ((outputs - targets) ** 2).mean()
             var = targets.var()
             r_squared = 1.0 - mse / (var + 1e-8)
@@ -546,16 +578,25 @@ class RNNLightning(L.LightningModule):
         else:
             return None, None
 
+    def _get_init_kwargs(self, inputs, targets):
+        """Build init_context / init_hidden kwargs for the forward pass."""
+        if self.task in ("path_integration", "path_integration_1d"):
+            return {"init_context": targets[:, 0, :]}
+        if self.init_hidden_value is not None:
+            batch_size = inputs.shape[0]
+            init_h = torch.full(
+                (batch_size, self.model.hidden_size),
+                self.init_hidden_value,
+                device=inputs.device,
+            )
+            return {"init_hidden": init_h}
+        return {}
+
     def training_step(self, batch) -> torch.Tensor:
         inputs, aux_info, targets = batch
-        
-        if self.task in ("path_integration", "path_integration_1d"):
-            init_context = targets[:, 0, :]
-        else:
-            init_context = None
-            
+
         hidden_states, outputs = self.model(
-            inputs=inputs, init_context=init_context
+            inputs=inputs, **self._get_init_kwargs(inputs, targets)
         )
 
         loss, per_channel_losses = self._compute_loss(outputs, targets)
@@ -578,14 +619,9 @@ class RNNLightning(L.LightningModule):
 
     def validation_step(self, batch) -> torch.Tensor:
         inputs, aux_info, targets = batch
-        
-        if self.task in ("path_integration", "path_integration_1d"):
-            init_context = targets[:, 0, :]
-        else:
-            init_context = None
-            
+
         hidden_states, outputs = self.model(
-            inputs=inputs, init_context=init_context
+            inputs=inputs, **self._get_init_kwargs(inputs, targets)
         )
 
         loss, per_channel_losses = self._compute_loss(outputs, targets)

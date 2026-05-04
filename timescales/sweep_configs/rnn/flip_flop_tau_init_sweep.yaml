@@ -1,0 +1,72 @@
+# Flip-Flop — Learnable τ with Different Initializations
+#
+# Linear (Identity) RNN with per-neuron learnable time constants on the
+# 6-bit heterogeneous pulse-rate flip-flop task.
+#
+# Sweep axes
+# ----------
+#   gain   : g ∈ {0.6, 0.8}
+#   τ init : uniform τ=1  vs  power-law τ ~ τ^{-1} (log-uniform, range [1, 200])
+#
+# Both conditions use the same normal_scaled W_rec initialization.
+# Power-law exponent = 1.0 ↔ p(τ) ∝ 1/τ (log-uniform), the "1/f" reference
+# prior that places equal probability mass in every decade of timescales.
+#
+# Total: 2 gains × 2 τ-init conditions × 1 seed = 4 runs
+
+base_config: "configs/rnn/flip_flop.yaml"
+n_seeds: 1
+
+fixed_overrides:
+  hidden_size: 512
+  activation: "Identity"
+  wrec_init: "normal_scaled"
+  zero_diag_wrec: false
+  shared_time_constant: false
+  learn_time_constants: true
+  n_bits: 6
+  p_pulse: [0.005, 0.007, 0.01, 0.02, 0.05, 0.1]
+  num_time_steps: 1000
+  max_steps: 5000
+  dynamics_type: "rate"
+  alpha_parameterization: "exponential"
+
+experiments:
+
+  # ── g = 0.6 ──────────────────────────────────────────────────────────────
+
+  # Uniform τ = 1 initialisation
+  - name: "g_0.6_tau_init_uniform"
+    overrides:
+      recurrent_gain: 0.6
+      init_time_constant: 1.0
+
+  # Power-law τ ~ τ^{-1}  (log-uniform over [1, 200])
+  - name: "g_0.6_tau_init_powerlaw"
+    overrides:
+      recurrent_gain: 0.6
+      init_time_constants_config:
+        type: "continuous"
+        distribution: "powerlaw"
+        exponent: 1.0          # p(τ) ∝ τ^{-1}  ↔  log-uniform
+        min_time_constant: 1.0
+        max_time_constant: 200.0
+
+  # ── g = 0.8 ──────────────────────────────────────────────────────────────
+
+  # Uniform τ = 1 initialisation
+  - name: "g_0.8_tau_init_uniform"
+    overrides:
+      recurrent_gain: 0.8
+      init_time_constant: 1.0
+
+  # Power-law τ ~ τ^{-1}  (log-uniform over [1, 200])
+  - name: "g_0.8_tau_init_powerlaw"
+    overrides:
+      recurrent_gain: 0.8
+      init_time_constants_config:
+        type: "continuous"
+        distribution: "powerlaw"
+        exponent: 1.0
+        min_time_constant: 1.0
+        max_time_constant: 200.0

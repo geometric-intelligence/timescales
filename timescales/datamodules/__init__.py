@@ -8,6 +8,7 @@ Available datamodules:
 - FlipFlopDataModule: N-bit flip-flop memory task
 - NullDataModule: Zero-input sequences for random network analysis
 - TeacherStudentDataModule: Teacher-student regression task
+- SineWaveDataModule: Autonomous sine-wave generation task
 """
 
 from .path_integration import PathIntegrationDataModule
@@ -16,6 +17,7 @@ from .binary_counter import HierarchicalCounterDataModule
 from .flip_flop import FlipFlopDataModule
 from .null_task import NullDataModule
 from .teacher_student import TeacherStudentDataModule
+from .sine_wave import SineWaveDataModule
 
 __all__ = [
     "PathIntegrationDataModule",
@@ -24,5 +26,6 @@ __all__ = [
     "FlipFlopDataModule",
     "NullDataModule",
     "TeacherStudentDataModule",
+    "SineWaveDataModule",
 ]
 

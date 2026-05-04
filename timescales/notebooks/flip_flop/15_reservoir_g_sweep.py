@@ -517,10 +517,14 @@ _pca_data = _pca_h.reshape(-1, _pca_H)  # (n_traj * T, hidden_size)
 _pca_data -= _pca_data.mean(axis=0, keepdims=True)
 
 from numpy.linalg import svd as _svd
-_, _pca_s, _ = _svd(_pca_data, full_matrices=False)
+_, _pca_s, _pca_Vt = _svd(_pca_data, full_matrices=False)
 _pca_var = _pca_s ** 2
 _pca_var_frac = _pca_var / _pca_var.sum()
 _pca_cum = np.cumsum(_pca_var_frac)
+
+# Participation Ratio: effective number of PCA dimensions
+# PR = (Σ λ_k)² / Σ λ_k²,  λ_k = squared singular values
+_pca_pr = _pca_var.sum() ** 2 / np.sum(_pca_var ** 2)
 
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 4.5))
 
@@ -548,10 +552,11 @@ ax2.set_xlabel("Principal component", fontsize=12)
 ax2.set_ylabel("Fraction of variance", fontsize=12)
 ax2.set_xlim(0, MAX_COMP_SHOW + 1)
 ax2.grid(True, alpha=0.2, axis="y")
-ax2.set_title("Variance per component", fontsize=12)
+ax2.set_title(f"Variance per PC   (PR = {_pca_pr:.2f})", fontsize=12)
 
 fig.suptitle(f"PCA Dimensionality — Reservoir g={PCA_GAIN}, "
-             f"{PCA_N_TRAJ} traj, N={_pca_H}, n_bits={_pca_cfg['n_bits']}",
+             f"{PCA_N_TRAJ} traj, N={_pca_H}, n_bits={_pca_cfg['n_bits']},  "
+             f"PR = {_pca_pr:.2f}",
              fontsize=13, fontweight="bold", y=1.03)
 plt.tight_layout()
 if SAVE_FIGS:
@@ -561,11 +566,94 @@ plt.show()
 
 print(f"\nPCA summary for g={PCA_GAIN}:")
 print(f"  Data matrix: {_pca_data.shape[0]} points x {_pca_data.shape[1]} dims")
+print(f"  Participation Ratio: {_pca_pr:.2f}  (out of {_pca_H} neurons)")
 for thresh in [0.80, 0.90, 0.95, 0.99]:
     n_needed = int(np.searchsorted(_pca_cum, thresh)) + 1
     print(f"  {thresh*100:.0f}% variance -> {n_needed} PCs")
 
 
+# %% Plot 6c: PC-to-bit correspondence
+# For each of the top K PCs, compute Pearson r between the PC projection of
+# hidden states and each target bit state.  A near-permutation matrix indicates
+# the network learned a factored representation — one latent dimension per bit.
+
+_n_bits_pca = _pca_cfg["n_bits"]
+N_PCS_CORR = min(_n_bits_pca + 6, _pca_data.shape[1])
+
+# Targets for the same trajectories
+_, _, _pca_tgt = _pca_dm.val_dataset.tensors          # (n_traj, T, n_bits)
+_tgt_flat = _pca_tgt.numpy().reshape(-1, _n_bits_pca) # (n_traj*T, n_bits)
+
+# PC projections: h_flat @ Vt[j, :] = coordinate along PC j
+_proj = _pca_data @ _pca_Vt[:N_PCS_CORR].T            # (n_traj*T, N_PCS_CORR)
+
+# Pearson r matrix: rows = PCs, cols = bits
+_corr_mat = np.zeros((N_PCS_CORR, _n_bits_pca))
+for _j in range(N_PCS_CORR):
+    for _i in range(_n_bits_pca):
+        _c = np.corrcoef(_proj[:, _j], _tgt_flat[:, _i])[0, 1]
+        _corr_mat[_j, _i] = _c if np.isfinite(_c) else 0.0
+
+_pp_list_pca = (_pca_cfg["p_pulse"] if isinstance(_pca_cfg["p_pulse"], list)
+                else [_pca_cfg["p_pulse"]] * _n_bits_pca)
+
+_fig_h = max(5.0, 0.52 * N_PCS_CORR + 1.2)
+fig, (ax_corr, ax_var) = plt.subplots(
+    1, 2, figsize=(14, _fig_h),
+    gridspec_kw=dict(width_ratios=[1, 0.38]))
+
+# Left: signed Pearson-r heatmap
+im = ax_corr.imshow(_corr_mat, cmap="RdBu_r", vmin=-1, vmax=1, aspect="auto")
+ax_corr.set_yticks(range(N_PCS_CORR))
+ax_corr.set_yticklabels(
+    [f"PC {j+1}  ({100*_pca_var_frac[j]:.1f}%)" for j in range(N_PCS_CORR)],
+    fontsize=8)
+ax_corr.set_xticks(range(_n_bits_pca))
+ax_corr.set_xticklabels(
+    [f"Bit {i}\n(p={_pp_list_pca[i]})" for i in range(_n_bits_pca)],
+    fontsize=8)
+for _j in range(N_PCS_CORR):
+    for _i in range(_n_bits_pca):
+        _v = _corr_mat[_j, _i]
+        ax_corr.text(_i, _j, f"{_v:+.2f}", ha="center", va="center",
+                     fontsize=6.5,
+                     color="white" if abs(_v) > 0.55 else "black")
+plt.colorbar(im, ax=ax_corr, label="Pearson $r$", shrink=0.6)
+ax_corr.set_xlabel("Output bit", fontsize=11)
+ax_corr.set_ylabel("Principal component", fontsize=11)
+ax_corr.set_title(
+    r"corr(PC$_j$ projection, bit$_i$ state)  —  g = " + str(PCA_GAIN),
+    fontsize=10)
+
+# Right: horizontal bar chart of variance per PC
+ax_var.barh(range(N_PCS_CORR), 100 * _pca_var_frac[:N_PCS_CORR],
+            color="#2a9d8f", edgecolor="none", alpha=0.85)
+ax_var.set_yticks(range(N_PCS_CORR))
+ax_var.set_yticklabels([f"PC {j+1}" for j in range(N_PCS_CORR)], fontsize=8)
+ax_var.invert_yaxis()
+ax_var.set_xlabel("Variance (%)", fontsize=10)
+ax_var.grid(True, alpha=0.2, axis="x")
+ax_var.spines["top"].set_visible(False)
+ax_var.spines["right"].set_visible(False)
+ax_var.set_title(f"Variance per PC\nPR = {_pca_pr:.2f}", fontsize=10)
+
+fig.suptitle(
+    f"PC–bit correspondence  —  g = {PCA_GAIN},  n_bits = {_n_bits_pca},  "
+    f"N = {_pca_H},  Participation Ratio = {_pca_pr:.2f}",
+    fontsize=12, fontweight="bold", y=1.01)
+plt.tight_layout()
+if SAVE_FIGS:
+    fig.savefig(os.path.join(FIGS_DIR, f"reservoir_pc_bit_corr_g{PCA_GAIN}.pdf"),
+                bbox_inches="tight", dpi=150)
+plt.show()
+
+# Print dominant PC per bit
+print(f"\nPC–bit assignment  (g = {PCA_GAIN},  PR = {_pca_pr:.2f}):")
+for _i in range(_n_bits_pca):
+    _best_j = int(np.argmax(np.abs(_corr_mat[:, _i])))
+    print(f"  Bit {_i}  (p={_pp_list_pca[_i]})  <->  PC {_best_j + 1}"
+          f"  (r = {_corr_mat[_best_j, _i]:+.3f},"
+          f"  var = {100*_pca_var_frac[_best_j]:.1f}%)")
 
 
 
@@ -881,6 +969,197 @@ for g in sorted(eig_data.keys()):
         print(f"  Bit {bit_i} (p={pp_list_g[bit_i]}, "
               f"hold~{1.0/pp_list_g[bit_i]:.0f})  <--  "
               f"Mode {mode_j+1} (τ_eff={tau_str})")
+
+# %% Plot 10b: Schur-mode coupling — input-to-Schur and Schur-to-output
+# Uses the real Schur decomposition J = Q T Q^T.  Q is orthogonal (always
+# well-conditioned, real-valued).  Columns of Q are sorted by |λ| descending.
+#
+# Schur-to-output coupling : |W_out @ Q|       — shape (n_bits, N)
+# Input-to-Schur coupling  : α |Q^T @ W_in|   — shape (N, n_bits)
+#   (uniform α = 1 − exp(−dt/τ) for reservoir networks with shared τ)
+
+from scipy.linalg import schur as _scipy_schur
+
+N_SCHUR_SHOW = NUM_MODES   # number of top Schur modes shown in heatmaps
+
+
+def _schur_sort(J: np.ndarray):
+    """
+    Real Schur decomposition of J, columns of Q sorted by |λ| descending.
+
+    Returns
+    -------
+    Q_sorted      : (N, N) real orthogonal
+    abs_eig_sorted: (N,)   |λ| per Schur column
+    tau_sorted    : (N,)   τ_eff = -1/ln|λ|
+    block_label   : (N,)   '1x1' or '2x2-a'/'2x2-b'
+    """
+    T, Q = _scipy_schur(J, output="real")
+    N = T.shape[0]
+
+    col_abs_eig = np.zeros(N)
+    block_label = np.empty(N, dtype=object)
+
+    k = 0
+    while k < N:
+        if k + 1 < N and abs(T[k + 1, k]) > 1e-10:        # 2×2 block (complex pair)
+            abs_e = np.abs(np.linalg.eigvals(T[k:k+2, k:k+2])[0])
+            col_abs_eig[k] = abs_e
+            col_abs_eig[k + 1] = abs_e
+            block_label[k] = "2x2-a"
+            block_label[k + 1] = "2x2-b"
+            k += 2
+        else:                                                # 1×1 block (real λ)
+            col_abs_eig[k] = abs(T[k, k])
+            block_label[k] = "1x1"
+            k += 1
+
+    sort_idx = np.argsort(col_abs_eig)[::-1]
+    Q_s = Q[:, sort_idx]
+    abs_eig_s = col_abs_eig[sort_idx]
+    block_label_s = block_label[sort_idx]
+
+    log_abs = np.log(np.clip(abs_eig_s, 1e-12, None))
+    tau_s = -1.0 / np.where(log_abs < -1e-10, log_abs, -1e-10)
+    return Q_s, abs_eig_s, tau_s, block_label_s
+
+
+for g in sorted(eig_data.keys()):
+    data = eig_data[g]
+    J_g = data["J"]
+    W_out_g = data["W_out"]
+    W_in_g = data["W_in"]
+    alpha_g = data["alpha"]
+    n_bits_g = data["n_bits"]
+    pp = data["p_pulse"]
+    pp_list_g = pp if isinstance(pp, list) else [pp] * n_bits_g
+    N_g = J_g.shape[0]
+
+    if W_out_g is None or W_in_g is None:
+        print(f"g={g}: missing W_out or W_in, skipping Schur plots")
+        continue
+
+    Q_s, abs_eig_s, tau_s, blk_s = _schur_sort(J_g)
+    rho_g = np.max(abs_eig_s)
+    n_show = min(N_SCHUR_SHOW, N_g)
+
+    # ── 1. Schur-to-output: |W_out @ Q| ─────────────────────────────────────
+    cout_all = np.abs(W_out_g @ Q_s)          # (n_bits, N) real, sorted by |λ|
+
+    # Profile traces
+    fig, axes_s = plt.subplots(n_bits_g, 1, figsize=(13, 2.0 * n_bits_g),
+                                sharex=True)
+    if n_bits_g == 1:
+        axes_s = [axes_s]
+    for bi, ax_s in enumerate(axes_s):
+        ax_s.plot(np.arange(1, N_g + 1), cout_all[bi],
+                  linewidth=0.8, color=COLORS[g], alpha=0.85)
+        ax_s.axvspan(1, n_bits_g + 0.5, alpha=0.08, color="#264653",
+                     label="top modes" if bi == 0 else None)
+        ax_s.set_ylabel(f"Bit {bi}\n(p={pp_list_g[bi]})", fontsize=9)
+        ax_s.grid(True, alpha=0.1)
+        ax_s.spines["top"].set_visible(False)
+        ax_s.spines["right"].set_visible(False)
+    axes_s[0].legend(fontsize=8, loc="upper right")
+    axes_s[-1].set_xlabel(r"Schur mode rank (by $|\lambda|$)", fontsize=11)
+    fig.suptitle(r"$|W_{\mathrm{out}}\,Q|$ across all Schur modes"
+                 f" — g = {g},  ρ = {rho_g:.3f}",
+                 fontsize=12, fontweight="bold")
+    plt.tight_layout()
+    if SAVE_FIGS:
+        fig.savefig(os.path.join(FIGS_DIR, f"reservoir_schur_out_profile_g{g}.pdf"),
+                    bbox_inches="tight", dpi=150)
+    plt.show()
+
+    # Heatmap (top n_show modes)
+    cout_top = cout_all[:, :n_show]           # (n_bits, n_show)
+    _mode_lbl = [
+        f"S{m+1}\nτ={tau_s[m]:.0f}\n({'R' if blk_s[m]=='1x1' else 'C'})"
+        for m in range(n_show)
+    ]
+    fig, ax = plt.subplots(figsize=(max(n_show * 0.45, 8), max(n_bits_g * 0.7, 3)))
+    im = ax.imshow(cout_top, cmap="YlOrRd", aspect="auto")
+    ax.set_yticks(range(n_bits_g))
+    ax.set_yticklabels([f"Bit {i} (p={pp_list_g[i]})" for i in range(n_bits_g)],
+                       fontsize=9)
+    ax.set_xticks(range(n_show))
+    ax.set_xticklabels(_mode_lbl, fontsize=6)
+    ax.axvline(n_bits_g - 0.5, color="white", linewidth=1.2, linestyle="--", alpha=0.7)
+    for i in range(n_bits_g):
+        for j in range(n_show):
+            v = cout_top[i, j]
+            ax.text(j, i, f"{v:.2f}", ha="center", va="center", fontsize=6,
+                    color="white" if v > 0.5 * cout_top.max() else "black")
+    plt.colorbar(im, ax=ax, label=r"$|W_{\mathrm{out}}\,Q|$", shrink=0.8)
+    fig.suptitle(f"Schur-to-Output Coupling — g = {g},  ρ = {rho_g:.3f}\n"
+                 r"$J=QTQ^\top$,  R=real λ,  C=complex pair",
+                 fontsize=12, fontweight="bold", y=1.06)
+    plt.tight_layout()
+    if SAVE_FIGS:
+        fig.savefig(os.path.join(FIGS_DIR, f"reservoir_schur_out_heatmap_g{g}.pdf"),
+                    bbox_inches="tight", dpi=150)
+    plt.show()
+
+    # ── 2. Input-to-Schur: α |Q^T @ W_in| ───────────────────────────────────
+    cin_all = alpha_g * np.abs(Q_s.T @ W_in_g)   # (N, n_bits) sorted by |λ|
+
+    # Profile traces
+    fig, axes_s = plt.subplots(n_bits_g, 1, figsize=(13, 2.0 * n_bits_g),
+                                sharex=True)
+    if n_bits_g == 1:
+        axes_s = [axes_s]
+    for bi, ax_s in enumerate(axes_s):
+        ax_s.plot(np.arange(1, N_g + 1), cin_all[:, bi],
+                  linewidth=0.8, color="#2a9d8f", alpha=0.85)
+        ax_s.axvspan(1, n_bits_g + 0.5, alpha=0.08, color="#264653",
+                     label="top modes" if bi == 0 else None)
+        ax_s.set_ylabel(f"Bit {bi}\n(p={pp_list_g[bi]})", fontsize=9)
+        ax_s.grid(True, alpha=0.1)
+        ax_s.spines["top"].set_visible(False)
+        ax_s.spines["right"].set_visible(False)
+    axes_s[0].legend(fontsize=8, loc="upper right")
+    axes_s[-1].set_xlabel(r"Schur mode rank (by $|\lambda|$)", fontsize=11)
+    fig.suptitle(r"$\alpha\,|Q^\top W_{\mathrm{in}}|$ across all Schur modes"
+                 f" — g = {g},  ρ = {rho_g:.3f}",
+                 fontsize=12, fontweight="bold")
+    plt.tight_layout()
+    if SAVE_FIGS:
+        fig.savefig(os.path.join(FIGS_DIR, f"reservoir_schur_in_profile_g{g}.pdf"),
+                    bbox_inches="tight", dpi=150)
+    plt.show()
+
+    # Heatmap (top n_show modes)
+    cin_top = cin_all[:n_show, :]             # (n_show, n_bits)
+    fig, ax = plt.subplots(figsize=(max(n_show * 0.45, 8), max(n_bits_g * 0.7, 3)))
+    im = ax.imshow(cin_top.T, cmap="YlGnBu", aspect="auto")
+    ax.set_yticks(range(n_bits_g))
+    ax.set_yticklabels([f"Input {i} (p={pp_list_g[i]})" for i in range(n_bits_g)],
+                       fontsize=9)
+    ax.set_xticks(range(n_show))
+    ax.set_xticklabels(_mode_lbl, fontsize=6)
+    ax.axvline(n_bits_g - 0.5, color="white", linewidth=1.2, linestyle="--", alpha=0.7)
+    for i in range(n_bits_g):
+        for j in range(n_show):
+            v = cin_top[j, i]
+            ax.text(j, i, f"{v:.3f}", ha="center", va="center", fontsize=6,
+                    color="white" if v > 0.5 * cin_top.max() else "black")
+    plt.colorbar(im, ax=ax, label=r"$\alpha\,|Q^\top W_{\mathrm{in}}|$", shrink=0.8)
+    fig.suptitle(f"Input-to-Schur Coupling — g = {g},  ρ = {rho_g:.3f}\n"
+                 r"$J=QTQ^\top$,  $A=\alpha I$,  coupling $=\alpha\,|Q^\top W_{\mathrm{in}}|$",
+                 fontsize=12, fontweight="bold", y=1.06)
+    plt.tight_layout()
+    if SAVE_FIGS:
+        fig.savefig(os.path.join(FIGS_DIR, f"reservoir_schur_in_heatmap_g{g}.pdf"),
+                    bbox_inches="tight", dpi=150)
+    plt.show()
+
+    # Dominant Schur mode per bit (output side)
+    dom_s = np.argmax(cout_all, axis=1)
+    print(f"\ng = {g}  (ρ = {rho_g:.3f}): Dominant Schur mode per output bit:")
+    for bi in range(n_bits_g):
+        mj = dom_s[bi]
+        print(f"  Bit {bi} (p={pp_list_g[bi]}, hold~{1.0/pp_list_g[bi]:.0f})"
+              f"  <--  Schur {mj+1}  (τ_eff={tau_s[mj]:.1f},  {blk_s[mj]})")
 
 # %% Plot 11: Mode coupling analysis — configurable scatter plots
 # Options:
