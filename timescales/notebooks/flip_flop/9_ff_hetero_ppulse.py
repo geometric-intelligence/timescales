@@ -30,7 +30,9 @@
 #             ── Spectrum & scree (after coupling) ──
 #             P04  Non-normality / Schur factor T
 #             P05  Jacobian eigenspectrum            (G_FOCUS only)
-#             P06  τ_eff scree, detailed             (G_FOCUS only)
+#             P05b All 4 coupling criteria spectra   (G_FOCUS only, 2x2 panel)
+#             P06  tau_eff scree, detailed           (G_FOCUS only)
+#             P07  Autocorrelation: top-N modes and neurons (exp fits)
 #             [P-D1..2 PCA dimensionality — commented out]
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1881,6 +1883,207 @@ plt.tight_layout()
 if SAVE_FIGS:
     fig.savefig(os.path.join(FIGS_DIR, f"P06_tau_eff_scree_g{G_FOCUS}.pdf"),
                 bbox_inches="tight", dpi=150)
+plt.show()
+
+
+# %% P05b  Jacobian spectrum — all 4 output-coupling criteria
+# Requires: _ef, _Vf, _Wo, _Qf, _eig_abs_rank,
+#           _coup_eig_all, _coup_schur_all, _r_eig_tgt, _r_schur_tgt, _dom_r,
+#           ZOOM_XLIM, ZOOM_YLIM, theta, bit_colors, UNTRAINED_COLOR, TRAINED_COLOR
+#
+# 2 × 2 panel: rows = basis (eigenmode / Schur),
+#              cols = method (connectivity / |correlation|)
+
+# -- dominant eigenvalue indices per criterion (all index into _ef) ------------
+_d5b_eigs = _ef.copy()     # eigenvalues in original np.linalg.eig order
+_d5b_Vf   = _Vf.copy()
+
+# eig-conn: argmax |W_out V| per bit → index into _ef
+_dom5b_eig_conn = {bi: int(np.argmax(_coup_eig_all[bi])) for bi in range(_nbf)}
+
+# eig-corr: argmax |r(eig-proj, target)| per bit → index into _ef
+_dom5b_eig_corr = {bi: int(np.argmax(np.abs(_r_eig_tgt[:, bi]))) for bi in range(_nbf)}
+
+# schur-conn: argmax |W_out Q| → Schur rank → eigenvalue index via _eig_abs_rank
+_dom5b_schur_conn = {
+    bi: int(_eig_abs_rank[int(np.argmax(_coup_schur_all[bi]))])
+    for bi in range(_nbf)}
+
+# schur-corr: _dom_r gives Schur rank → eigenvalue index via _eig_abs_rank
+_dom5b_schur_corr = {bi: int(_eig_abs_rank[_dom_r[bi]]) for bi in range(_nbf)}
+
+_criteria_5b = [
+    ("Eig → output\n(connectivity)",   _dom5b_eig_conn),
+    ("Eig → output\n(|correlation|)",  _dom5b_eig_corr),
+    ("Schur → output\n(connectivity)", _dom5b_schur_conn),
+    ("Schur → output\n(|correlation|)",_dom5b_schur_corr),
+]
+
+fig5b, axes5b = plt.subplots(2, 2, figsize=(10, 8), squeeze=False)
+_ax5b_flat = axes5b.ravel()
+
+for _pi, (_crit_name, _dom_dict) in enumerate(_criteria_5b):
+    _ax5b = _ax5b_flat[_pi]
+
+    # unit circle
+    _ax5b.plot(np.cos(theta), np.sin(theta), color="#c0392b",
+               linewidth=1.2, alpha=0.85, linestyle="-", zorder=1)
+    _ax5b.axhline(0, color="#bbb", linewidth=0.3, zorder=0)
+    _ax5b.axvline(0, color="#bbb", linewidth=0.3, zorder=0)
+
+    # bulk eigenvalues (trained)
+    _dom5b_set = set(_dom_dict.values())
+    _rest5b = np.array([i for i in range(len(_d5b_eigs)) if i not in _dom5b_set])
+    if len(_rest5b):
+        _ax5b.scatter(_d5b_eigs[_rest5b].real, _d5b_eigs[_rest5b].imag,
+                      s=16, alpha=0.55, c=TRAINED_COLOR, edgecolors="none", zorder=2)
+
+    # highlighted dominant modes per bit
+    for _bi, _ei in _dom_dict.items():
+        _ax5b.scatter(_d5b_eigs[_ei].real, _d5b_eigs[_ei].imag,
+                      s=70, alpha=1.0, color=bit_colors[_bi],
+                      edgecolors="white", linewidths=0.8, zorder=5,
+                      label=f"Bit {_bi}")
+        # also mark conjugate if present
+        _conj = np.conj(_d5b_eigs[_ei])
+        if abs(_d5b_eigs[_ei].imag) > 1e-6:
+            _conj_cands = np.where(np.abs(_d5b_eigs - _conj) < 1e-8)[0]
+            for _cc in _conj_cands:
+                if _cc != _ei:
+                    _ax5b.scatter(_d5b_eigs[_cc].real, _d5b_eigs[_cc].imag,
+                                  s=40, alpha=0.7, color=bit_colors[_bi],
+                                  edgecolors="white", linewidths=0.6, zorder=4)
+
+    _ax5b.set_xlim(*ZOOM_XLIM)
+    _ax5b.set_ylim(*ZOOM_YLIM)
+    _ax5b.set_aspect("equal")
+    _ax5b.grid(True, alpha=0.12)
+    _ax5b.set_title(_crit_name, fontsize=10, fontweight="bold")
+    _ax5b.set_xlabel("Re($\\lambda$)", fontsize=9)
+    _ax5b.set_ylabel("Im($\\lambda$)", fontsize=9)
+    if _pi == 0:
+        _ax5b.legend(fontsize=7.5, loc="upper left", framealpha=0.8)
+
+fig5b.suptitle(f"Jacobian Eigenvalue Spectrum — g = {G_FOCUS}\n"
+               f"(each panel highlights dominant eigenvalue per bit by the labelled criterion)",
+               fontsize=11, fontweight="bold", y=1.02)
+plt.tight_layout()
+if SAVE_FIGS:
+    fig5b.savefig(os.path.join(FIGS_DIR, f"P05b_spectrum_criteria_g{G_FOCUS}.pdf"),
+                  bbox_inches="tight", dpi=150)
+plt.show()
+
+# %% P07  Autocorrelation of top-N Schur modes and neurons
+# Requires: _pca_h, _Qf, _r_schur_tgt, _r_neu_tgt, _tauf, _nbf, G_FOCUS, FIGS_DIR
+# Configuration
+N_TOP_AC = 9     # number of modes/neurons to show  (best if a perfect square)
+MAX_LAG  = 200   # autocorrelation lag in timesteps
+
+from scipy.optimize import curve_fit as _curve_fit_ac
+
+_n_side_ac = int(np.ceil(np.sqrt(N_TOP_AC)))
+
+# -- select top modes and neurons by max |r_tgt| across bits --
+_ac_mode_ranks = np.argsort(np.max(np.abs(_r_schur_tgt), axis=1))[::-1][:N_TOP_AC]
+_ac_neu_ranks  = np.argsort(np.max(np.abs(_r_neu_tgt),   axis=1))[::-1][:N_TOP_AC]
+
+# -- Schur-projected time series per trajectory ----------------------------
+_Z_traj_ac = np.einsum('nth,hk->ntk', _pca_h, _Qf)   # (n_traj, T, N)
+
+# -- vectorised autocorrelation (via direct sum; fast for small MAX_LAG) ---
+def _autocorr_traj(x_traj, max_lag):
+    """
+    x_traj : (n_traj, T)
+    Returns : (max_lag,) mean normalised autocorrelation across trajectories.
+    """
+    n_traj, T = x_traj.shape
+    max_lag = min(max_lag, T - 1)
+    x_c = x_traj - x_traj.mean(axis=1, keepdims=True)  # mean-centre per traj
+    # variance per trajectory (avoid divide-by-zero)
+    var = (x_c ** 2).mean(axis=1) + 1e-30               # (n_traj,)
+    ac = np.zeros(max_lag)
+    for lag in range(max_lag):
+        ac[lag] = np.mean(
+            (x_c[:, :T-lag] * x_c[:, lag:]).mean(axis=1) / var
+        )
+    return ac
+
+def _exp_decay_ac(t, tau):
+    return np.exp(-t / np.maximum(tau, 0.1))
+
+_lags_ac = np.arange(MAX_LAG)
+
+def _make_autocorr_grid(ax_grid, series_list, titles, grid_n, color, label_prefix):
+    """Fill a grid of autocorrelation subplots, fit exponential to each."""
+    for _k, (_ac_ts, _ttl) in enumerate(zip(series_list, titles)):
+        _rr, _cc = _k // grid_n, _k % grid_n
+        _ax = ax_grid[_rr, _cc]
+        _ac = _autocorr_traj(_ac_ts, MAX_LAG)
+        _ax.plot(_lags_ac, _ac, lw=1.2, color=color, alpha=0.85)
+        _ax.axhline(0, color='k', lw=0.5, alpha=0.4, zorder=0)
+        # fit exponential to first positive-correlation segment
+        try:
+            _pos = _ac > 0
+            if _pos.sum() > 5:
+                (tau_fit,), _ = _curve_fit_ac(
+                    _exp_decay_ac, _lags_ac[_pos], _ac[_pos],
+                    p0=[20.0], bounds=(0.1, 1e4), maxfev=5000)
+                _ax.plot(_lags_ac, _exp_decay_ac(_lags_ac, tau_fit),
+                         '--', lw=1.5, color="#e76f51", alpha=0.9,
+                         label=f"$\\tau_{{\\rm fit}}$={tau_fit:.1f}")
+                _ax.legend(fontsize=6.5, loc="upper right", framealpha=0.7)
+        except Exception:
+            pass
+        _ax.set_title(_ttl, fontsize=7.5)
+        _ax.set_ylim(-0.35, 1.05)
+        _ax.set_xlabel("Lag (steps)", fontsize=7)
+        _ax.set_ylabel("$C(\\tau)$", fontsize=7)
+        _ax.tick_params(labelsize=6)
+        _ax.grid(True, alpha=0.12)
+    # hide unused cells
+    for _k in range(len(series_list), grid_n ** 2):
+        ax_grid[_k // grid_n, _k % grid_n].set_visible(False)
+
+# ── Schur mode autocorrelations ──
+_mode_series = [_Z_traj_ac[:, :, _mi] for _mi in _ac_mode_ranks]
+_mode_titles = []
+for _mi in _ac_mode_ranks:
+    _r_str = "  ".join([f"B{bi}:{_r_schur_tgt[_mi, bi]:+.2f}" for bi in range(_nbf)])
+    _mode_titles.append(f"Schur {_mi+1}  ($\\tau_{{\\rm eff}}$={_tauf[_mi]:.0f})\n{_r_str}")
+
+fig_acm, axes_acm = plt.subplots(_n_side_ac, _n_side_ac,
+                                  figsize=(_n_side_ac * 3.5, _n_side_ac * 2.5),
+                                  squeeze=False)
+_make_autocorr_grid(axes_acm, _mode_series, _mode_titles,
+                    _n_side_ac, "#2563eb", "Schur")
+fig_acm.suptitle(f"Autocorrelation — top-{N_TOP_AC} Schur modes  (by max |r_tgt|)  "
+                 f"g = {G_FOCUS}\ndashed = exp fit",
+                 fontsize=11, fontweight="bold")
+plt.tight_layout()
+if SAVE_FIGS:
+    fig_acm.savefig(os.path.join(FIGS_DIR, f"P07a_autocorr_modes_g{G_FOCUS}.pdf"),
+                    bbox_inches="tight", dpi=150)
+plt.show()
+
+# ── Neuron autocorrelations ──
+_neu_series = [_pca_h[:, :, _ni] for _ni in _ac_neu_ranks]
+_neu_titles = []
+for _ni in _ac_neu_ranks:
+    _r_str = "  ".join([f"B{bi}:{_r_neu_tgt[_ni, bi]:+.2f}" for bi in range(_nbf)])
+    _neu_titles.append(f"Neuron {_ni+1}\n{_r_str}")
+
+fig_acn, axes_acn = plt.subplots(_n_side_ac, _n_side_ac,
+                                  figsize=(_n_side_ac * 3.5, _n_side_ac * 2.5),
+                                  squeeze=False)
+_make_autocorr_grid(axes_acn, _neu_series, _neu_titles,
+                    _n_side_ac, "#059669", "Neuron")
+fig_acn.suptitle(f"Autocorrelation — top-{N_TOP_AC} neurons  (by max |r_tgt|)  "
+                 f"g = {G_FOCUS}\ndashed = exp fit",
+                 fontsize=11, fontweight="bold")
+plt.tight_layout()
+if SAVE_FIGS:
+    fig_acn.savefig(os.path.join(FIGS_DIR, f"P07b_autocorr_neurons_g{G_FOCUS}.pdf"),
+                    bbox_inches="tight", dpi=150)
 plt.show()
 
 

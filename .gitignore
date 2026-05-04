@@ -15,7 +15,8 @@ __pycache__/
 /timescales/logs/checkpoints/*
 /timescales/logs/*
 
-/timescales/notebooks/figs/**/*.pdf
+# Generated figures
+timescales/notebooks/**/*.pdf
 
 
 # Sandbox results
@@ -26,6 +27,11 @@ sandbox/**/results/
 
 #VSCode
 .vscode/
+
+# AI / editor metadata
+.cursor/
+.claude/
+CLAUDE.md
 
 
 # macOS

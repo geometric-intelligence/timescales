@@ -204,6 +204,7 @@ def _create_rnn_model(config: dict):
         activation=getattr(nn, config["activation"]),
         learn_time_constants=config["learn_time_constants"],
         init_time_constant=config.get("init_time_constant"),
+        init_time_constants_config=config.get("init_time_constants_config"),
         shared_time_constant=config["shared_time_constant"],
         normalize_hidden=config["normalize_hidden"],
         zero_diag_wrec=config["zero_diag_wrec"],

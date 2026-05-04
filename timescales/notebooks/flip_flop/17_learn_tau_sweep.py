@@ -1251,9 +1251,31 @@ for _cond in CONDITIONS:
     _N = _J.shape[0]
     _Qf, _abs_ef, _tauf, _blkf = _schur_sort_17(_J)
 
+    # ── Eigenmode decomposition ───────────────────────────────────────────────
+    _ef_raw, _Vf_raw = np.linalg.eig(_J)                    # complex, original order
+    _eig_srt   = np.argsort(np.abs(_ef_raw))[::-1]
+    _ef_s      = _ef_raw[_eig_srt]                           # (N,) sorted eigenvalues
+    _Vf_s      = _Vf_raw[:, _eig_srt]                       # sorted eigenvectors
+    _log_ae    = np.log(np.clip(np.abs(_ef_s), 1e-12, None))
+    _tau_eig   = -1.0 / np.where(_log_ae < -1e-10, _log_ae, -1e-10)   # (N,)
+    _Vf_inv    = np.linalg.pinv(_Vf_s)                      # (N, N)
+
+    # ── Per-neuron τ_eff via dominant Schur component ─────────────────────────
+    # Neuron k's timescale = τ_eff of the Schur column it loads onto most.
+    _dom_schur_k = np.argmax(np.abs(_Qf), axis=1)           # (N,) → Schur rank per neuron
+    _tau_neu_all = _tauf[_dom_schur_k]                       # (N,) τ_eff per neuron
+
+    # Learned τ per neuron (or None for fixed-τ run)
+    _log_tau_raw = None
+    for _kk, _vv in _state.items():
+        if "log_time_constants" in _kk:
+            _log_tau_raw = _vv.numpy()
+    _learned_tau_all = np.exp(_log_tau_raw) if _log_tau_raw is not None else None
+
     # ── Connectivity coupling matrices ────────────────────────────────────────
-    _coup_schur = np.abs(_W_out @ _Qf)                       # (n_bits, N)
-    _cout       = np.abs(_W_out)                              # (n_bits, H)
+    _coup_schur = np.abs(_W_out @ _Qf)                       # (n_bits, N) sorted by |λ|
+    _coup_eig   = np.abs(_W_out @ _Vf_s).real                # (n_bits, N) sorted by |λ|
+    _cout       = np.abs(_W_out)                              # (n_bits, H) original order
     _cout_nro   = np.argsort(np.linalg.norm(_cout, axis=0))[::-1]
     _cout_s     = _cout[:, _cout_nro]                        # sorted by ||
 
@@ -1291,26 +1313,38 @@ for _cond in CONDITIONS:
         _h_flat = None
         print(f"  W_in not found for cond={_cond} — correlation skipped")
 
-    # Schur projections + correlations (only if forward pass succeeded)
+    # Schur / eigenmode / neuron projections + correlations
     if _h_flat is not None:
-        _Z_schur      = _h_flat @ _Qf
-        _r_schur_tgt  = _pearson_r_17(_Z_schur, _tgt_flat)        # (N, n_bits)
-        _dom_r_17     = {bi: int(np.argmax(np.abs(_r_schur_tgt[:, bi])))
-                         for bi in range(_nbits)}
-        _bulk_mask    = np.ones(_N, dtype=bool)
+        _Z_schur     = _h_flat @ _Qf
+        _r_schur_tgt = _pearson_r_17(_Z_schur, _tgt_flat)         # (N, n_bits) sorted
+
+        _Z_eig       = np.real(_h_flat @ _Vf_inv.T)               # (n_traj*T, N) sorted
+        _r_eig_tgt   = _pearson_r_17(_Z_eig, _tgt_flat)           # (N, n_bits) sorted
+
+        _r_neu_tgt   = _pearson_r_17(_h_flat, _tgt_flat)          # (N, n_bits) orig. order
+
+        _dom_r_17    = {bi: int(np.argmax(np.abs(_r_schur_tgt[:, bi])))
+                        for bi in range(_nbits)}
+        _bulk_mask   = np.ones(_N, dtype=bool)
         for _bi in _dom_r_17.values():
             _bulk_mask[_bi] = False
     else:
-        _r_schur_tgt = None
+        _r_schur_tgt = _r_eig_tgt = _r_neu_tgt = None
         _dom_r_17    = {}
         _bulk_mask   = np.ones(_N, dtype=bool)
 
     _g06[_cond] = dict(
         Qf=_Qf, tauf=_tauf, blkf=_blkf, N=_N, nbits=_nbits, ppl=_ppl,
-        coup_schur=_coup_schur, cout_s=_cout_s,
-        cin=_cin, win_s=_win_s,
-        r_schur_tgt=_r_schur_tgt,
+        dt=float(_rc["dt"]),
+        # Schur
+        coup_schur=_coup_schur, cin=_cin, r_schur_tgt=_r_schur_tgt,
         dom_r=_dom_r_17, bulk_mask=_bulk_mask,
+        # Eigenmode
+        ef_s=_ef_s, tau_eig=_tau_eig, coup_eig=_coup_eig, r_eig_tgt=_r_eig_tgt,
+        # Neuron
+        cout=_cout, cout_s=_cout_s, win_s=_win_s, r_neu_tgt=_r_neu_tgt,
+        tau_neu=_tau_neu_all,
+        learned_tau=_learned_tau_all,
         acc=_row["final_val_acc"],
     )
     print(f"  g={G_FOCUS_17} cond={_cond}: Schur+coupling+corr done  "
@@ -1600,5 +1634,163 @@ if SAVE_FIGS:
     fig.savefig(os.path.join(FIGS_DIR, f"14_corr_scree_g{G_FOCUS_17}.pdf"),
                 bbox_inches="tight", dpi=150)
 plt.show()
+
+
+# %% G0.6 — PLOT 15: τ_eff of dominant mode vs task hold time
+# ─────────────────────────────────────────────────────────────────────────────
+# Two separate figures — one per τ condition (Fixed / Learnable).
+# Each figure: 3 rows (Schur | Eigenmode | Neuron) × 2 cols (Connectivity | Correlation)
+#
+# Notes on τ_eff per basis:
+#   Schur    – τ_eff = –1/ln|λ| from Schur block eigenvalue
+#   Eigenmode– τ_eff = –1/ln|λ|  (same eigenvalues, different sorting)
+#   Neuron   – τ_eff = τ of the Schur mode most expressed in that neuron
+#              (i.e., τ_eff[argmax_j |Q[k,j]|] for dominant neuron k)
+# ─────────────────────────────────────────────────────────────────────────────
+# Requires: _g06, bit_colors, HOLDS, _COND_LABELS, G_FOCUS_17, FIGS_DIR, SAVE_FIGS
+
+_MODE_LABELS_15 = ["Schur modes", "Eigenmodes", "Neurons"]
+_COUP_LABELS_15 = ["Connectivity", "Correlation"]
+
+# Shared axis limits — ALL quantities in real time (multiply steps by dt).
+# τ_eff (steps) × dt = real time;  HOLDS (steps) × dt = real time;
+# learned_tau is already in real time.
+_all_tau_vals_rt = []
+for _c in CONDITIONS:
+    if _c not in _g06:
+        continue
+    _d15 = _g06[_c]
+    _dt15 = 0.1
+    _all_tau_vals_rt.extend((_d15["tauf"]    * _dt15).tolist())
+    _all_tau_vals_rt.extend((_d15["tau_eig"] * _dt15).tolist())
+    _all_tau_vals_rt.extend((_d15["tau_neu"] * _dt15).tolist())
+    if _d15["learned_tau"] is not None:
+        _all_tau_vals_rt.extend(_d15["learned_tau"].tolist())
+
+# _dt_ref    = _g06[next(c for c in CONDITIONS if c in _g06)]["dt"]
+_dt_ref = 0.1
+_holds_rt  = [h * _dt_ref for h in HOLDS]
+_hold_max  = max(_holds_rt) * 1.6
+_tau_max   = min(max(_all_tau_vals_rt) * 1.3, _hold_max * 1.5) if _all_tau_vals_rt else _hold_max
+_lim_lo_15 = min(_holds_rt) * 0.4
+
+from matplotlib.lines import Line2D as _LD15
+
+_bit_leg_15 = [
+    _LD15([0], [0], marker="o", color="w",
+          markerfacecolor=bit_colors[i], markeredgecolor="white",
+          markersize=9, label=f"Bit {i}  (hold\u2248{_holds_rt[i]:.1f})")
+    for i in range(len(HOLDS))
+]
+
+
+def _make_tau_hold_fig(cond: str):
+    """Draw the 3\u00d72 scatter for a single \u03c4 condition; return fig.
+    All axes in real time units (τ_eff × dt for eigenvalue-based; τ_k directly
+    for learned; HOLDS × dt for the y-axis)."""
+    if cond not in _g06:
+        print(f"No data for cond={cond}")
+        return None
+
+    d      = _g06[cond]
+    dt     = 0.1
+    n_bits = d["nbits"]
+    holds_rt = np.array([1.0 / p for p in d["ppl"]]) * dt   # real time
+
+    fig, axes = plt.subplots(3, 2, figsize=(9, 11), squeeze=False)
+
+    for _ri, _mode in enumerate(["schur", "eig", "neu"]):
+        for _ci, _meth in enumerate(["conn", "corr"]):
+            ax = axes[_ri, _ci]
+
+            # Diagonal reference line
+            ax.plot([_lim_lo_15, _tau_max], [_lim_lo_15, _tau_max],
+                    "k--", lw=1.2, alpha=0.45, zorder=0)
+
+            # ── Select coupling matrix and τ_eff array (in real time) ──────
+            if _mode == "schur":
+                coup  = d["coup_schur"] if _meth == "conn" else (
+                    np.abs(d["r_schur_tgt"]).T if d["r_schur_tgt"] is not None else None)
+                tau_v = d["tauf"] * dt          # steps → real time
+
+            elif _mode == "eig":
+                coup  = d["coup_eig"] if _meth == "conn" else (
+                    np.abs(d["r_eig_tgt"]).T if d["r_eig_tgt"] is not None else None)
+                tau_v = d["tau_eig"] * dt       # steps → real time
+
+            else:  # neuron
+                coup  = d["cout"] if _meth == "conn" else (
+                    np.abs(d["r_neu_tgt"]).T if d["r_neu_tgt"] is not None else None)
+                # learned_tau already in real time;
+                # Schur-projection fallback converted from steps
+                tau_v = (d["learned_tau"] if d["learned_tau"] is not None
+                         else d["tau_neu"] * dt)
+
+            if coup is None:
+                ax.text(0.5, 0.5, "no correlation data",
+                        transform=ax.transAxes, ha="center",
+                        va="center", fontsize=9, color="gray")
+            else:
+                for bi in range(n_bits):
+                    dom_j   = int(np.argmax(coup[bi]))
+                    tau_dom = float(tau_v[dom_j])
+                    ax.scatter(tau_dom, float(holds_rt[bi]),
+                               s=90, marker="o",
+                               color=bit_colors[bi],
+                               edgecolors="white", linewidths=0.9,
+                               zorder=5, clip_on=False)
+
+            # ax.set_xscale("log")
+            # ax.set_yscale("log")
+            ax.set_xlim(_lim_lo_15, _tau_max)
+            ax.set_ylim(_lim_lo_15, _hold_max)
+            ax.set_aspect("equal")
+            ax.grid(True, alpha=0.15, which="both")
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+
+            if _ri == 2:
+                ax.set_xlabel(r"$\tau_{\mathrm{eff}}$ of dominant mode (real time)",
+                              fontsize=10)
+            if _ci == 0:
+                ax.set_ylabel("Task hold duration (real time)", fontsize=10)
+
+            # Annotate neuron row to clarify which τ is on the x-axis
+            _mode_lbl = _MODE_LABELS_15[_ri]
+            if _mode == "neu":
+                _mode_lbl += (r"  ($\tau_k$ learned)"
+                              if d["learned_tau"] is not None
+                              else r"  ($\tau_{\mathrm{eff}}$ via Schur)")
+            ax.set_title(f"{_mode_lbl} \u2014 {_COUP_LABELS_15[_ci]}",
+                         fontsize=10, fontweight="bold")
+
+    fig.legend(handles=_bit_leg_15, fontsize=8, ncol=1,
+               loc="upper left", bbox_to_anchor=(1.01, 0.99),
+               framealpha=0.85, borderaxespad=0)
+
+    acc_str = f"  (acc={d['acc']:.3f})" if d["acc"] else ""
+    fig.suptitle(
+        f"Dominant-mode $\\tau_{{\\mathrm{{eff}}}}$ vs task hold  "
+        f"\u2014  {_COND_LABELS[cond]},  g = {G_FOCUS_17}{acc_str}",
+        fontsize=12, fontweight="bold", y=1.01)
+    plt.tight_layout()
+    return fig
+
+
+# Figure 15a — Fixed τ
+_fig15a = _make_tau_hold_fig("False")
+if _fig15a is not None:
+    if SAVE_FIGS:
+        _fig15a.savefig(os.path.join(FIGS_DIR, f"15a_tau_vs_hold_fixed_g{G_FOCUS_17}.pdf"),
+                        bbox_inches="tight", dpi=150)
+    plt.show()
+
+# Figure 15b — Learnable τ
+_fig15b = _make_tau_hold_fig("True")
+if _fig15b is not None:
+    if SAVE_FIGS:
+        _fig15b.savefig(os.path.join(FIGS_DIR, f"15b_tau_vs_hold_learnable_g{G_FOCUS_17}.pdf"),
+                        bbox_inches="tight", dpi=150)
+    plt.show()
 
 # %%
