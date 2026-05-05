@@ -304,6 +304,137 @@ if SAVE_FIGS:
     fig.savefig(os.path.join(FIGS_DIR, "val_r2.pdf"), bbox_inches="tight", dpi=150)
 plt.show()
 
+# %% P_TRAJ  Example output trajectories — 2 selected frequencies
+# ─────────────────────────────────────────────────────────────────────────────
+# For a chosen trained network, show the network output y(t) and the target
+# y*(t) for 2 frequency channels (one slower, one faster), over a short window
+# of a few periods.  Analogue of the flip-flop P03b cell.
+#
+# No input signal (sine-wave task is autonomous after initial condition).
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Config ────────────────────────────────────────────────────────────────────
+PTRAJ_T_TRAIN       = None    # which T_train to use (None → best-loss run)
+PTRAJ_TARGET_PERIODS = None   # [T_fast, T_slow], or None → auto (min & max period)
+PTRAJ_N_PERIODS_SHOW = 4      # how many cycles of the SLOWER channel to display
+PTRAJ_SAVE          = True
+
+_C_TARGET_SW = "#DA627D"   # y*(t) — deep rose
+_C_OUTPUT_SW = "#FFA5AB"   # y(t)  — salmon pink
+
+# ── Select run ────────────────────────────────────────────────────────────────
+_ptraj_T = PTRAJ_T_TRAIN
+if _ptraj_T is None or _ptraj_T not in T_trains:
+    # Pick the T_train with best (lowest) validation loss
+    _ptraj_T = df.loc[df["final_val_loss"].idxmin(), "T_train"]
+print(f"P_TRAJ: using T_train = {_ptraj_T}")
+
+_ptraj_row   = df[df["T_train"] == _ptraj_T]
+_ptraj_row   = _ptraj_row.loc[_ptraj_row["final_val_loss"].idxmin()]
+_ptraj_model, _ptraj_rc = _load_model(_ptraj_row)
+
+# ── Select frequency channels ─────────────────────────────────────────────────
+# Default: pick the pair with the longest period and the pair with the shortest
+_target_periods_ptraj = (
+    PTRAJ_TARGET_PERIODS if PTRAJ_TARGET_PERIODS is not None
+    else [T_fast, T_slow]
+)
+_sel_pairs_ptraj = [
+    int(np.argmin([abs(p - tp) for p in periods_list]))
+    for tp in _target_periods_ptraj
+]
+_sel_pairs_ptraj = list(dict.fromkeys(_sel_pairs_ptraj))   # de-duplicate
+
+# ── Generate target + network output ─────────────────────────────────────────
+_dt_ptraj  = _ptraj_rc["dt"]
+_T_show_ptraj = int(PTRAJ_N_PERIODS_SHOW * max(_target_periods_ptraj) / _dt_ptraj)
+_t_ax_ptraj, _tgt_ptraj = _make_targets(_T_show_ptraj, _dt_ptraj)
+
+if _ptraj_model is not None:
+    _h0_ptraj   = torch.full((1, _ptraj_rc["hidden_size"]),
+                             _ptraj_rc.get("init_hidden_value", 1.0))
+    _out_ptraj, _div_ptraj = _safe_run(_ptraj_model, _T_show_ptraj, _h0_ptraj)
+else:
+    _out_ptraj, _div_ptraj = None, True
+
+# ── Plot ──────────────────────────────────────────────────────────────────────
+_n_panels_ptraj = len(_sel_pairs_ptraj)
+figptraj, axesptraj = plt.subplots(
+    _n_panels_ptraj, 1,
+    figsize=(13, 2.6 * _n_panels_ptraj),
+    sharex=True,
+)
+if _n_panels_ptraj == 1:
+    axesptraj = [axesptraj]
+
+for _row_i, _pair_k in enumerate(_sel_pairs_ptraj):
+    ax = axesptraj[_row_i]
+    _ic, _is = 2 * _pair_k, 2 * _pair_k + 1
+    _T_k = periods_list[_pair_k]
+
+    # Target: cosine component (representative of the pair)
+    ax.plot(_t_ax_ptraj, _tgt_ptraj[:, _ic],
+            color=_C_TARGET_SW, linewidth=1.8,
+            label="$y^*(t)$ — target" if _row_i == 0 else None, zorder=4)
+
+    # Network output
+    if not _div_ptraj and _out_ptraj is not None:
+        ax.plot(_t_ax_ptraj, _out_ptraj[:, _ic],
+                color=_C_OUTPUT_SW, linewidth=1.4,
+                label="$y(t)$ — network output" if _row_i == 0 else None,
+                zorder=3)
+
+    # Horizontal baseline
+    ax.axhline(0, color="#cccccc", linewidth=0.5, zorder=0)
+
+    # Period markers: light vertical lines every T_k
+    for _cyc in range(1, PTRAJ_N_PERIODS_SHOW + 1):
+        ax.axvline(_cyc * _T_k, color="#dddddd", linewidth=0.8,
+                   linestyle="--", zorder=0)
+
+    ax.set_ylim(-1.45, 1.45)
+    ax.set_yticks([-1, 0, 1])
+    ax.set_yticklabels(["-1", "0", "1"], fontsize=10)
+    ax.set_ylabel(
+        f"Amplitude\n$T = {_T_k:.0f}$",
+        fontsize=9,
+    )
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.grid(True, axis="x", alpha=0.12, color="#bbbbbb")
+
+axesptraj[-1].set_xlabel(f"Time  (dt = {_dt_ptraj})", fontsize=11)
+
+# Legend — outside to the right
+from matplotlib.lines import Line2D as _LDptraj
+figptraj.legend(
+    handles=[
+        _LDptraj([0], [0], color=_C_TARGET_SW, lw=2.2,
+                 label="$y^*(t)$ — target"),
+        _LDptraj([0], [0], color=_C_OUTPUT_SW, lw=1.6,
+                 label="$y(t)$ — network output"),
+    ],
+    fontsize=10,
+    loc="upper left",
+    bbox_to_anchor=(1.01, 0.97),
+    framealpha=0.9,
+    borderaxespad=0,
+)
+
+figptraj.suptitle(
+    f"Sine-Wave Generation — Example Output  "
+    f"(T_train = {_ptraj_T},  g = {g_fixed:.2f})",
+    fontsize=12, fontweight="bold", y=1.02,
+)
+plt.tight_layout()
+if PTRAJ_SAVE:
+    figptraj.savefig(
+        os.path.join(FIGS_DIR, f"P_traj_example_T{_ptraj_T}.pdf"),
+        bbox_inches="tight", dpi=150,
+    )
+plt.show()
+
+
 # %% [markdown]
 # ## 2. Per-run diagnostics
 #

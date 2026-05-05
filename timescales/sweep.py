@@ -149,11 +149,25 @@ def create_jobs(
     experiment_configs: list[tuple[str, dict]],
     seeds: list[int],
     sweep_dir: str,
+    seeds_outermost: bool = True,
 ) -> list[Job]:
+    """Build the list of Job objects.
+
+    With seeds_outermost=True (default), the iteration runs all experiments
+    at seed=s before moving to seed=s+1. Combined with the GPU pool's
+    submission order, this means the first complete pass over the grid
+    (one seed per condition) finishes before any second-seed work starts —
+    useful for "fast first pass, accumulate later" schedules.
+    """
     jobs = []
-    for exp_name, config in experiment_configs:
+    if seeds_outermost:
         for seed in seeds:
-            jobs.append(Job(exp_name, config, seed, sweep_dir))
+            for exp_name, config in experiment_configs:
+                jobs.append(Job(exp_name, config, seed, sweep_dir))
+    else:
+        for exp_name, config in experiment_configs:
+            for seed in seeds:
+                jobs.append(Job(exp_name, config, seed, sweep_dir))
     return jobs
 
 
@@ -452,7 +466,9 @@ def run_parameter_sweep(sweep_file: str, gpu_ids: list[int] | None = None):
     save_sweep_metadata(sweep_dir, sweep_config, experiment_configs)
 
     seeds = list(range(n_seeds))
-    jobs = create_jobs(experiment_configs, seeds, sweep_dir)
+    seeds_outermost = sweep_config.get("seeds_outermost", True)
+    jobs = create_jobs(experiment_configs, seeds, sweep_dir,
+                       seeds_outermost=seeds_outermost)
 
     scheduler = GPUScheduler(gpu_ids or [0])
     all_results = scheduler.run_jobs_parallel(jobs)

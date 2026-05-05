@@ -219,6 +219,7 @@ class RNN(nn.Module):
         recurrent_gain: float = 1.0,
         noise_std: float = 0.0,
         wrec_init: str = "orthogonal",
+        wrec_init_config: dict | None = None,
         alpha_parameterization: str = "exponential",
         stability_param: float = 2.0,
         dynamics_type: str = "rate",
@@ -250,6 +251,16 @@ class RNN(nn.Module):
                          "normal_scaled": N(0, 1/N) entries (Sompolinsky et al. 1988).
                          "levy_stable": alpha-stable (Levy) distribution.
                          "lognormal": |W_ij| ~ LogNormal(0, 1) with random signs, scaled by 1/sqrt(N).
+                         "schur_powerlaw": sample a base W (per `wrec_init_config["base_init"]`,
+                              default "normal_scaled"), build J = (I-A) + g A W, perform
+                              real Schur surgery so that J's eigenvalue magnitudes are
+                              exp(-1/tau_i) for tau_i ~ p(tau) ∝ tau^{-beta_H} on
+                              [tau_min, tau_max], and recover the implied W_rec.
+                              Requires `wrec_init_config = {beta_H, tau_min, tau_max,
+                              base_init?, seed?}`.
+        :param wrec_init_config: Optional dict carrying extra hyperparameters for
+                              wrec_init schemes that need them (currently only
+                              "schur_powerlaw"). Mirrors `init_time_constants_config`.
         :param alpha_parameterization: "exponential" for 1-exp(-dt/tau), "linear" for dt/tau.
         :param stability_param: Stability exponent for Levy-stable distribution (only for wrec_init="levy_stable").
         :param dynamics_type: ODE formulation to discretize ("rate" or "voltage").
@@ -266,6 +277,8 @@ class RNN(nn.Module):
         self.zero_diag_wrec = zero_diag_wrec
         self.stability_param = stability_param
         self.wrec_init = wrec_init
+        self.wrec_init_config = wrec_init_config
+        self.recurrent_gain = recurrent_gain
 
         # Build initial log-tau tensor (only for learnable case)
         init_log_tau_tensor = None
@@ -438,12 +451,77 @@ class RNN(nn.Module):
             samples = signs * magnitudes / n**0.5
             with torch.no_grad():
                 self.rnn_step.W_rec.weight.copy_(torch.tensor(samples, dtype=torch.float32))
+        elif self.wrec_init == "schur_powerlaw":
+            self._init_wrec_schur_powerlaw(n)
         else:
             raise ValueError(f"Unknown wrec_init: {self.wrec_init}")
         nn.init.zeros_(self.rnn_step.W_rec.bias)
 
         nn.init.xavier_uniform_(self.W_out.weight)
         nn.init.xavier_uniform_(self.W_h_init.weight)
+
+    def _init_wrec_schur_powerlaw(self, n: int) -> None:
+        """Initialize W_rec via real-Schur spectral surgery on the Jacobian.
+
+        Builds J = (I - A) + g A W_base, replaces J's eigenvalue magnitudes
+        with exp(-1/tau_i) for tau_i drawn from a power law on
+        [tau_min, tau_max], and recovers the implied W_rec. See
+        :mod:`timescales.rnns.schur_init` for the math.
+        """
+        from timescales.rnns.schur_init import compute_W_tilde
+
+        cfg = self.wrec_init_config or {}
+        try:
+            beta_H = float(cfg["beta_H"])
+            tau_min = float(cfg["tau_min"])
+            tau_max = float(cfg["tau_max"])
+        except KeyError as e:
+            raise ValueError(
+                "wrec_init='schur_powerlaw' requires wrec_init_config with "
+                "keys: beta_H, tau_min, tau_max (and optionally base_init, seed)."
+            ) from e
+
+        base_init = cfg.get("base_init", "normal_scaled")
+        seed = cfg.get("seed", None)
+        rng = np.random.default_rng(seed) if seed is not None else np.random.default_rng()
+
+        if base_init == "normal_scaled":
+            W_base = rng.standard_normal(size=(n, n)) / np.sqrt(n)
+        elif base_init == "orthogonal":
+            A = rng.standard_normal(size=(n, n))
+            Q_, R_ = np.linalg.qr(A)
+            W_base = Q_ * np.sign(np.diag(R_))[None, :]
+        else:
+            raise ValueError(
+                f"Unsupported base_init for schur_powerlaw: {base_init!r}. "
+                f"Use 'normal_scaled' or 'orthogonal'."
+            )
+
+        alphas = self.rnn_step.current_alphas.detach().cpu().numpy().astype(np.float64)
+        if alphas.shape != (n,):
+            raise RuntimeError(
+                f"Expected alphas shape ({n},), got {alphas.shape}. "
+                f"shared_time_constant=True is not supported for schur_powerlaw."
+            )
+
+        W_tilde = compute_W_tilde(
+            W=W_base,
+            alphas=alphas,
+            g=float(self.recurrent_gain),
+            beta_H=beta_H,
+            tau_min=tau_min,
+            tau_max=tau_max,
+            rng=rng,
+        )
+
+        with torch.no_grad():
+            self.rnn_step.W_rec.weight.copy_(torch.tensor(W_tilde, dtype=torch.float32))
+
+        print(
+            f"  wrec_init=schur_powerlaw: base={base_init}, beta_H={beta_H}, "
+            f"tau in [{tau_min}, {tau_max}], g={self.recurrent_gain}, "
+            f"||W_tilde||_F={np.linalg.norm(W_tilde):.3f}"
+        )
 
     def get_time_constant_stats(self) -> dict:
         """Return statistics about the time constant values.

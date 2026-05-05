@@ -29,6 +29,8 @@ from callbacks import (
     PositionDecodingCallback,
     TrajectoryVisualizationCallback,
     GradientStatisticsCallback,
+    TauTrajectoryCallback,
+    SpectralSnapshotCallback,
 )
 from timescales.analysis.measurements import PositionDecodingMeasurement
 from timescales.datamodules import (
@@ -42,6 +44,26 @@ from timescales.datamodules import (
 )
 
 log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "logs"))
+
+
+def _capture_rng_state() -> dict:
+    """Snapshot torch + numpy + cuda RNG states for reproducibility."""
+    import numpy as _np
+    state = {
+        "torch": torch.get_rng_state(),
+        "numpy": _np.random.get_state(),
+    }
+    if torch.cuda.is_available():
+        state["cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+@rank_zero_only
+def _dump_rng_state(run_dir: str, tag: str) -> None:
+    os.makedirs(run_dir, exist_ok=True)
+    path = os.path.join(run_dir, f"rng_state_{tag}.pt")
+    torch.save(_capture_rng_state(), path)
+    print(f"RNG state ({tag}) saved to: {path}")
 
 
 # ============================================================================
@@ -211,6 +233,7 @@ def _create_rnn_model(config: dict):
         recurrent_gain=config["recurrent_gain"],
         noise_std=config["noise_std"],
         wrec_init=config["wrec_init"],
+        wrec_init_config=config.get("wrec_init_config"),
         alpha_parameterization=config["alpha_parameterization"],
         stability_param=config.get("stability_param", 2.0),
         dynamics_type=config["dynamics_type"],
@@ -340,6 +363,12 @@ def _build_callbacks(config: dict, run_dir: str, datamodule=None):
     loss_logger = LossLoggerCallback(save_dir=run_dir)
     callbacks = [checkpoint_callback, loss_logger]
 
+    if config.get("track_tau_trajectory", True):
+        callbacks.append(TauTrajectoryCallback(save_dir=run_dir))
+
+    if config.get("track_spectral_snapshots", True) and config.get("model_type") == "rnn":
+        callbacks.append(SpectralSnapshotCallback(save_dir=run_dir))
+
     if config.get("track_gradients", False):
         callbacks.append(GradientStatisticsCallback(
             save_dir=run_dir,
@@ -455,6 +484,8 @@ def single_seed(config: dict) -> dict:
         os.makedirs(checkpoints_dir, exist_ok=True)
     create_directories()
 
+    _dump_rng_state(run_dir, tag="init")
+
     @rank_zero_only
     def save_untrained_model():
         torch.save({
@@ -541,6 +572,7 @@ def single_seed(config: dict) -> dict:
         print(f"  Artifacts saved: {run_dir}")
 
     save_artifacts()
+    _dump_rng_state(run_dir, tag="final")
     wandb.finish()
     return {"final_val_loss": final_val_loss}
 

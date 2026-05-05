@@ -56,6 +56,9 @@ rng = np.random.default_rng(SEED)
 plt.rcParams["figure.figsize"] = (14, 5)
 plt.rcParams["font.size"] = 12
 
+%config InlineBackend.figure_format = 'svg'
+plt.rcParams["svg.fonttype"] = "path"   # text → outlines; renders identically in Illustrator
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Core helpers
 # ──────────────────────────────────────────────────────────────────────────────
@@ -285,16 +288,20 @@ plt.show()
 G_TAU_SWEEP = 0.9
 
 TAU_CONFIGS = [
-    dict(label="Uniform tau=1",
-         dist="uniform",    tau=1.0),
-    dict(label="Power-law beta=1\ntau in [0.1, 20]",
+    dict(label="Uniform\nτ = 1",
+         dist="uniform",  tau=1.0),
+    dict(label="Power-law\nβ = 0.25",
+         dist="powerlaw", lo=0.1, hi=20.0, beta=0.25),
+    dict(label="Power-law\nβ = 0.5",
+         dist="powerlaw", lo=0.1, hi=20.0, beta=0.5),
+    dict(label="Power-law\nβ = 1.0",
          dist="powerlaw", lo=0.1, hi=20.0, beta=1.0),
-    dict(label="Power-law beta=2\ntau in [0.1, 20]",
-         dist="powerlaw",    lo=0.1, hi=20.0, beta=2.0),
-    dict(label="Power-law beta=3\ntau in [0.1, 20]",
-         dist="powerlaw",    lo=0.1, hi=20.0, beta=3.0),
-    dict(label="Gaussian  mu=5, sigma=2\nclipped to [0.1, 20]",
-         dist="gaussian",    mu=5.0, sigma=2.0, lo=0.1, hi=20.0),
+    dict(label="Power-law\nβ = 1.5",
+         dist="powerlaw", lo=0.1, hi=20.0, beta=1.5),
+    dict(label="Power-law\nβ = 2.0",
+         dist="powerlaw", lo=0.1, hi=20.0, beta=2.0),
+    dict(label="Gaussian\nμ=5, σ=2",
+         dist="gaussian", mu=5.0, sigma=2.0, lo=0.1, hi=20.0),
 ]
 
 print(f"\nSection 2: g={G_TAU_SWEEP}, Gaussian W (same realization as Section 1), dt={DT}")
@@ -322,7 +329,7 @@ colors_tau = plt.get_cmap(CMAP_SEC2)(np.linspace(0.15, 0.90, n_tau))
 
 # Layout: 4 rows x n_tau cols
 #   row 0: tau PDF  |  row 1: alpha PDF  |  row 2: J eigenspectrum  |  row 3: tau_eff
-fig = plt.figure(figsize=(n_tau * 3.2, 12.5))
+fig = plt.figure(figsize=(n_tau * 2.8, 12.5))
 gs2 = GridSpec(4, n_tau, figure=fig,
                height_ratios=[0.40, 0.40, 1.00, 0.65],
                hspace=0.07, wspace=0.06,
@@ -338,13 +345,11 @@ for col, (res, color) in enumerate(zip(results_tau, colors_tau)):
     alp_r  = res["alphas"]
     eigs_J = res["eigs_J"]
     te     = res["tau_eff"]
-    label_top = cfg["label"].splitlines()[0]
-
     # Row 0: tau distribution
     ax = axes_tpdf[col]
     ax.hist(taus_r, bins=50, density=True, color=color, alpha=0.85, edgecolor="none")
     ax.set_yscale("log"); ax.set_xscale("log")
-    ax.set_title(label_top, fontsize=8, color=color, pad=3)
+    ax.set_title(cfg["label"], fontsize=8, color=color, pad=3)
     ax.tick_params(labelsize=7); ax.grid(True, alpha=0.25)
     ax.set_xticklabels([])
     if col == 0:
@@ -414,6 +419,203 @@ fig.suptitle(
     f"Section 2: tau-distribution sweep  --  Gaussian W, g={G_TAU_SWEEP},"
     f"  dt={DT},  N={N_GAUSS}",
     fontsize=12, y=0.975)
+plt.show()
+
+
+# %% [markdown]
+# ---
+# ## Section 2b -- Schur-Diagonal Spectral Surgery
+#
+# Start from the **same** J as Section 2 (Gaussian W, uniform τ=1, g=0.9).
+# Real Schur decomposition: J = Q H Qᵀ, Q orthogonal, H upper quasi-triangular.
+#
+# For each power-law exponent β, draw N τ_eff values from p(τ) ∝ τ^{-β} on
+# [τ_lo, τ_hi], convert to |λ_new| = exp(−1/τ), and *replace the eigenvalue
+# magnitudes* of every diagonal block of H while keeping:
+#   • the phases of complex eigenvalues (angular structure of the spectrum),
+#   • all off-diagonal entries of H (upper-triangular part above the blocks),
+#   • Q (the eigenbasis is completely unchanged).
+#
+# The resulting J̃ = Q H̃ Qᵀ is a valid real matrix with the prescribed
+# spectral distribution, but the **same invariant subspaces** as the original J.
+# This is fundamentally different from Section 2, where changing τ_i per-neuron
+# reshuffles the entire eigenbasis.
+
+# %%
+from scipy.linalg import schur as _scipy_schur_s2b
+
+TAU_LO_S2B  = 0.1
+TAU_HI_S2B  = 20.0
+BETAS_S2B   = [0.25, 0.5, 1.0, 1.5, 2.0]
+
+
+def _sample_powerlaw_taus(N, beta, lo, hi, rng_):
+    """CDF-inversion sample from p(τ) ∝ τ^{-β} on [lo, hi]."""
+    u = rng_.uniform(0.0, 1.0, N)
+    if abs(beta - 1.0) < 1e-6:
+        return lo * (hi / lo) ** u
+    exp = 1.0 - beta
+    return (lo**exp + u * (hi**exp - lo**exp)) ** (1.0 / exp)
+
+
+def _schur_spectral_surgery(J, taus_new):
+    """
+    Replace eigenvalue magnitudes of J's Schur diagonal blocks with
+    exp(-1/tau) for each tau in taus_new (sorted descending to match
+    Schur blocks sorted by |lambda|).
+
+    Returns (J_tilde, H_tilde, Q, eigs_original, eigs_new).
+    """
+    H, Q = _scipy_schur_s2b(J, output="real")
+    N    = H.shape[0]
+
+    # Sort new taus descending so the largest tau_eff (slowest mode) maps to
+    # the largest |lambda| block — matching scipy's default Schur ordering.
+    mags_new = np.exp(-1.0 / np.sort(taus_new)[::-1])
+
+    H_tilde  = H.copy()
+    eigs_old, eigs_new_list = [], []
+    i = k = 0   # k indexes into mags_new
+
+    while i < N and k < len(mags_new):
+        if i < N - 1 and abs(H[i + 1, i]) > 1e-12:
+            # 2×2 conjugate-pair block
+            a, b   = H[i, i], H[i, i + 1]
+            mag_old = np.sqrt(a**2 + b**2)
+            eigs_old.append(complex(a,  b))
+            eigs_old.append(complex(a, -b))
+
+            mag_new = mags_new[k]; k += 1
+            s = mag_new / mag_old if mag_old > 1e-12 else 0.0
+            H_tilde[i,     i    ] =  s * a
+            H_tilde[i,     i + 1] =  s * b
+            H_tilde[i + 1, i    ] =  s * H[i + 1, i]   # preserves sign of off-diag
+            H_tilde[i + 1, i + 1] =  s * a
+            eigs_new_list.extend([complex(s*a, s*b), complex(s*a, -s*b)])
+            i += 2
+        else:
+            # 1×1 real eigenvalue block
+            r = H[i, i]
+            eigs_old.append(complex(r, 0))
+            mag_new = mags_new[k]; k += 1
+            r_new   = np.sign(r) * mag_new if abs(r) > 1e-12 else mag_new
+            H_tilde[i, i] = r_new
+            eigs_new_list.append(complex(r_new, 0))
+            i += 1
+
+    J_tilde = Q @ H_tilde @ Q.T
+    return J_tilde, H_tilde, Q, np.array(eigs_old), np.array(eigs_new_list)
+
+
+# ── Build baseline J (uniform tau=1, same W and g as Section 2) ──────────────
+_alpha0_s2b = 1.0 - np.exp(-DT / 1.0)
+_J0_s2b     = (1 - _alpha0_s2b) * np.eye(N_GAUSS) + _alpha0_s2b * G_TAU_SWEEP * W_gauss
+_eigs0_s2b  = np.linalg.eigvals(_J0_s2b)
+_te0_s2b    = tau_eff_stable(_eigs0_s2b)
+
+# ── Run surgery for each β ────────────────────────────────────────────────────
+_results_s2b = []
+for beta in BETAS_S2B:
+    _taus_new = _sample_powerlaw_taus(N_GAUSS, beta, TAU_LO_S2B, TAU_HI_S2B,
+                                      np.random.default_rng(SEED))
+    _Jt, _Ht, _Q, _eo, _en = _schur_spectral_surgery(_J0_s2b, _taus_new)
+    _te_new = tau_eff_stable(_en)
+    _results_s2b.append(dict(
+        beta=beta, taus_new=_taus_new,
+        J_tilde=_Jt, eigs_new=_en, tau_eff=_te_new,
+    ))
+    print(f"  β={beta:.2f}:  |λ| range [{np.abs(_en).min():.3f}, {np.abs(_en).max():.3f}]"
+          f"  τ_eff range [{_te_new.min():.1f}, {_te_new.max():.1f}]  "
+          f"({len(_te_new)}/{N_GAUSS} stable)")
+
+# ── Plot ──────────────────────────────────────────────────────────────────────
+_n_s2b     = len(BETAS_S2B)
+_colors_s2b = plt.get_cmap(CMAP_SEC2)(np.linspace(0.15, 0.90, _n_s2b))
+_all_te_s2b = np.concatenate([r["tau_eff"] for r in _results_s2b])
+_te_lo_s2b  = _all_te_s2b.min()
+_te_hi_s2b  = TAU_CAP
+
+# 3 rows × n_beta cols:
+#   row 0 — inserted τ_eff histogram (the power-law draws)
+#   row 1 — J̃ eigenspectrum (grey = original J, colour = J̃)
+#   row 2 — τ_eff distribution recovered from J̃ eigenvalues
+fig_s2b = plt.figure(figsize=(_n_s2b * 2.8, 9))
+gs_s2b  = GridSpec(3, _n_s2b, figure=fig_s2b,
+                   height_ratios=[0.55, 1.0, 0.55],
+                   hspace=0.08, wspace=0.06,
+                   left=0.07, right=0.99, top=0.93, bottom=0.06)
+_axes_tau  = [fig_s2b.add_subplot(gs_s2b[0, c]) for c in range(_n_s2b)]
+_axes_spec = [fig_s2b.add_subplot(gs_s2b[1, c]) for c in range(_n_s2b)]
+_axes_te   = [fig_s2b.add_subplot(gs_s2b[2, c]) for c in range(_n_s2b)]
+
+_xy_s2b = xy_lim_g   # reuse spectral plot limit from Section 1
+
+for col, (res, clr) in enumerate(zip(_results_s2b, _colors_s2b)):
+    beta = res["beta"]
+
+    # Row 0: inserted τ_eff distribution
+    ax = _axes_tau[col]
+    _bins_in = np.logspace(np.log10(TAU_LO_S2B * 0.9), np.log10(TAU_HI_S2B * 1.1), 50)
+    ax.hist(res["taus_new"], bins=_bins_in, density=True,
+            color=clr, alpha=0.85, edgecolor="none")
+    ax.set_xscale("log"); ax.set_yscale("log")
+    ax.set_title(f"β = {beta}", fontsize=9, color=clr, pad=3)
+    ax.tick_params(labelsize=7); ax.grid(True, alpha=0.25)
+    ax.set_xticklabels([])
+    if col == 0:
+        ax.set_ylabel("Inserted\n$\\tau$ dist.", fontsize=8)
+    else:
+        ax.set_yticklabels([])
+
+    # Row 1: eigenspectrum — original J (grey) + J̃ (colour)
+    ax = _axes_spec[col]
+    ax.scatter(_eigs0_s2b.real, _eigs0_s2b.imag,
+               s=1, alpha=0.2, color="gray", rasterized=True, zorder=1)
+    ax.scatter(res["eigs_new"].real, res["eigs_new"].imag,
+               s=1, alpha=0.35, color=clr, rasterized=True, zorder=2)
+    ax.plot(np.cos(_theta), np.sin(_theta), "r--", lw=1.0, alpha=0.8)
+    ax.axvline(0, color="gray", lw=0.4, alpha=0.4)
+    ax.axhline(0, color="gray", lw=0.4, alpha=0.4)
+    ax.set_xlim(-_xy_s2b, _xy_s2b); ax.set_ylim(-_xy_s2b, _xy_s2b)
+    ax.set_aspect("equal", adjustable="box")
+    ax.tick_params(labelsize=7); ax.grid(True, alpha=0.2)
+    ax.set_xticklabels([]); ax.set_yticklabels([])
+    if col == 0:
+        ax.set_ylabel("$\\lambda_{J̃}$ spectrum\n(grey = original J)", fontsize=8)
+        ax.set_yticklabels([f"{v:.1f}" for v in
+                            np.linspace(-_xy_s2b, _xy_s2b, 5)], fontsize=6)
+
+    # Row 2: τ_eff of J̃
+    ax = _axes_te[col]
+    if len(res["tau_eff"]) > 5:
+        _bins_te = np.logspace(np.log10(_te_lo_s2b + 1e-3),
+                               np.log10(_te_hi_s2b), N_BINS)
+        ax.hist(res["tau_eff"], bins=_bins_te, density=True,
+                color=clr, alpha=0.8, edgecolor="none")
+    ax.set_xscale("log"); ax.set_yscale("log")
+    ax.set_xlim(_te_lo_s2b * 0.9, _te_hi_s2b * 1.1)
+    ax.set_xlabel("$\\tau_{\\rm eff}$", fontsize=8)
+    ax.tick_params(labelsize=7); ax.grid(True, alpha=0.3)
+    if col == 0:
+        ax.set_ylabel("Recovered\n$\\tau_{\\rm eff}$ dist.", fontsize=8)
+    else:
+        ax.set_yticklabels([])
+
+# Sync τ_eff y-limits across columns
+_ylims_te_s2b = [_axes_te[c].get_ylim() for c in range(_n_s2b)
+                 if len(_results_s2b[c]["tau_eff"]) > 5]
+if _ylims_te_s2b:
+    _yl_lo = min(y[0] for y in _ylims_te_s2b)
+    _yl_hi = max(y[1] for y in _ylims_te_s2b)
+    for c in range(_n_s2b):
+        _axes_te[c].set_ylim(_yl_lo, _yl_hi)
+
+fig_s2b.suptitle(
+    f"Section 2b: Schur-diagonal spectral surgery  —  "
+    f"Gaussian W, g={G_TAU_SWEEP}, dt={DT}, N={N_GAUSS}\n"
+    r"J̃ = Q H̃ Qᵀ  |  same eigenbasis Q as uniform-τ J  |  "
+    r"$|\lambda_k|$ replaced by exp(−1/τ),  τ ~ τ$^{-β}$",
+    fontsize=11, y=0.975)
 plt.show()
 
 

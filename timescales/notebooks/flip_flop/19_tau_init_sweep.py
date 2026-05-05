@@ -60,6 +60,9 @@ INIT_TYPES = ["uniform", "powerlaw"]   # tau_init_{type}
 P_PULSE = [0.005, 0.007, 0.01, 0.02, 0.05, 0.1]
 HOLDS   = [1.0 / p for p in P_PULSE]
 
+# Threshold for P4 "steps to criterion" plot
+ACC_THRESHOLD = 0.9   # fraction; adjust as needed
+
 # ── Cosmetics ────────────────────────────────────────────────────────────────
 _GAIN_COLORS = {0.6: "#2a9d8f", 0.8: "#f4a261"}
 _INIT_STYLE  = {
@@ -165,7 +168,7 @@ for ax, g in zip(axes, GAINS):
     ax.set_title(f"g = {g}", fontsize=13, fontweight="bold")
     ax.set_xlabel("Training step", fontsize=11)
     ax.set_yscale("log")
-    ax.set_xscale("log")
+    # ax.set_xscale("log")
     ax.grid(True, alpha=0.25)
     # Deduplicate legend entries
     _handles, _labels = ax.get_legend_handles_labels()
@@ -204,8 +207,11 @@ for ax, g in zip(axes, GAINS):
                     label=sty["label"])
     ax.set_title(f"g = {g}", fontsize=13, fontweight="bold")
     ax.set_xlabel("Training step", fontsize=11)
-    ax.set_ylim(0.3, 1.02)
+    #ax.set_ylim(0.3, 1.02)
+    # ax.set_yscale("log")
+    # ax.set_xscale("log")
     ax.axhline(1.0, color="black", ls=":", lw=0.8, alpha=0.35)
+    ax.axhline(ACC_THRESHOLD, color="red", ls="--", lw=1.8, alpha=0.85)
     ax.grid(True, alpha=0.25)
     _handles, _labels = ax.get_legend_handles_labels()
     _seen = {}
@@ -269,6 +275,87 @@ fig.suptitle("Final Metrics vs Gain — Tau Init Sweep",
 plt.tight_layout()
 if SAVE_FIGS:
     fig.savefig(os.path.join(FIGS_DIR, "P3_final_metrics.pdf"),
+                bbox_inches="tight", dpi=150)
+plt.show()
+
+
+# %% P4  Steps to criterion — strip plot
+# x-axis: gain (one position per g).  y-axis: steps to criterion (log).
+# Init condition encoded by marker + colour; no connecting lines.
+# Open v = DNF (run placed at last recorded step as a lower bound).
+# More seeds → point cloud per x-position; median + CI can be layered later.
+
+def _steps_to_threshold(steps, val_accs, threshold):
+    """Return the first step where val_acc >= threshold, or None."""
+    for s, a in zip(steps, val_accs):
+        if a is not None and a >= threshold:
+            return s
+    return None
+
+
+# Build table
+_p4_rows = []
+for _, row in df.iterrows():
+    st = row["steps"]
+    va = row["val_accs"]
+    xs = st[:len(va)] if st else list(range(len(va)))
+    hit = _steps_to_threshold(xs, va, ACC_THRESHOLD)
+    _p4_rows.append(dict(
+        gain=row["gain"],
+        init_type=row["init_type"],
+        seed=row["seed"],
+        step=hit if hit is not None else (xs[-1] if xs else None),
+        reached=hit is not None,
+    ))
+_p4_df = pd.DataFrame(_p4_rows).dropna(subset=["step"])
+
+_INIT_CLR = {"uniform": "#555555", "powerlaw": "#e76f51"}
+
+fig, ax = plt.subplots(figsize=(3 + 1.5 * len(GAINS), 5))
+
+for init_type in INIT_TYPES:
+    sty = _INIT_STYLE[init_type]
+    clr = _INIT_CLR[init_type]
+    sub = _p4_df[_p4_df["init_type"] == init_type]
+    for _, r in sub.iterrows():
+        xp = r["gain"]
+        yp = r["step"]
+        if r["reached"]:
+            ax.scatter(xp, yp, color=clr, marker=sty["marker"],
+                       s=90, edgecolors="white", linewidths=0.9, zorder=4)
+        else:
+            ax.scatter(xp, yp, color=clr, marker="v",
+                       s=80, facecolors="none", edgecolors=clr,
+                       linewidths=1.5, zorder=4)
+
+ax.set_yscale("log")
+ax.set_xticks(GAINS)
+ax.set_xticklabels([f"g = {g}" for g in GAINS], fontsize=11)
+ax.set_xlim(min(GAINS) - 0.15, max(GAINS) + 0.15)
+ax.set_ylabel(f"Steps to {ACC_THRESHOLD:.0%} accuracy", fontsize=11)
+ax.grid(True, axis="y", alpha=0.25)
+ax.spines["top"].set_visible(False)
+ax.spines["right"].set_visible(False)
+ax.spines["bottom"].set_visible(False)
+ax.tick_params(bottom=False)
+
+# Init-type legend outside
+from matplotlib.lines import Line2D as _LD4
+_leg4 = [
+    _LD4([0], [0], marker=_INIT_STYLE[it]["marker"], color="w",
+         markerfacecolor=_INIT_CLR[it], markeredgecolor="white",
+         markersize=9, label=_INIT_STYLE[it]["label"])
+    for it in INIT_TYPES
+]
+ax.legend(handles=_leg4, fontsize=9, ncol=1,
+          loc="upper left", bbox_to_anchor=(1.02, 1.0),
+          borderaxespad=0, framealpha=0.85)
+
+ax.set_title(f"Steps to criterion  (acc ≥ {ACC_THRESHOLD:.0%})",
+             fontsize=12, fontweight="bold")
+plt.tight_layout()
+if SAVE_FIGS:
+    fig.savefig(os.path.join(FIGS_DIR, "P4_steps_to_criterion.pdf"),
                 bbox_inches="tight", dpi=150)
 plt.show()
 

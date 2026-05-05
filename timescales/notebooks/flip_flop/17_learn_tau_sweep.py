@@ -565,12 +565,12 @@ for row_idx, g in enumerate(GAINS):
             #             bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.7))
 
         row_data = df[(df["gain"] == g) & (df["condition"] == cond)]
-        if not row_data.empty:
-            acc = row_data.iloc[0]["final_val_acc"]
-            ax.annotate(f"acc={acc:.3f}" if acc is not None else "",
-                        xy=(0.03, 0.95), xycoords="axes fraction",
-                        ha="left", va="top", fontsize=8,
-                        bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.7))
+        # if not row_data.empty:
+            # acc = row_data.iloc[0]["final_val_acc"]
+            # ax.annotate(f"acc={acc:.3f}" if acc is not None else "",
+            #             xy=(0.03, 0.95), xycoords="axes fraction",
+            #             ha="left", va="top", fontsize=8,
+            #             bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.7))
 
         ax.set_aspect("equal")
         ax.set_xlim(0.7, 1.02)
@@ -1328,8 +1328,20 @@ for _cond in CONDITIONS:
         _bulk_mask   = np.ones(_N, dtype=bool)
         for _bi in _dom_r_17.values():
             _bulk_mask[_bi] = False
+
+        # Output-only ablation coupling:
+        #   abl[k, bi] = std(activity_k) * |effective_output_coupling_k→bi| / std(ŷ_bi)
+        # Schur: Q orthogonal ⟹ effective coupling = |W_out Q| = coup_schur
+        # Eig  : use coup_eig as proxy (exact only when V is unitary)
+        # Neuron: effective coupling = |W_out|
+        _y_hat_17  = _h_flat @ _W_out.T                              # (M, n_bits)
+        _y_std_17  = _y_hat_17.std(0).clip(1e-12)                    # (n_bits,)
+        _abl_schur = _Z_schur.std(0)[:, None] * _coup_schur.T / _y_std_17[None, :]  # (N, n_bits)
+        _abl_eig   = _Z_eig.std(0)[:, None]   * _coup_eig.T   / _y_std_17[None, :]  # (N, n_bits)
+        _abl_neu   = _h_flat.std(0)[:, None]   * np.abs(_W_out).T   / _y_std_17[None, :]  # (N, n_bits)
     else:
         _r_schur_tgt = _r_eig_tgt = _r_neu_tgt = None
+        _abl_schur = _abl_eig = _abl_neu = None
         _dom_r_17    = {}
         _bulk_mask   = np.ones(_N, dtype=bool)
 
@@ -1338,11 +1350,14 @@ for _cond in CONDITIONS:
         dt=float(_rc["dt"]),
         # Schur
         coup_schur=_coup_schur, cin=_cin, r_schur_tgt=_r_schur_tgt,
+        abl_schur=_abl_schur,
         dom_r=_dom_r_17, bulk_mask=_bulk_mask,
         # Eigenmode
         ef_s=_ef_s, tau_eig=_tau_eig, coup_eig=_coup_eig, r_eig_tgt=_r_eig_tgt,
+        abl_eig=_abl_eig,
         # Neuron
         cout=_cout, cout_s=_cout_s, win_s=_win_s, r_neu_tgt=_r_neu_tgt,
+        abl_neu=_abl_neu,
         tau_neu=_tau_neu_all,
         learned_tau=_learned_tau_all,
         acc=_row["final_val_acc"],
@@ -1369,6 +1384,22 @@ _vmax_neu_in_17 = max(
 print(f"Shared vmaxes — schur_out={_vmax_schur_out_17:.4f}, "
       f"neu_out={_vmax_neu_out_17:.4f}, "
       f"schur_in={_vmax_schur_in_17:.4f}, neu_in={_vmax_neu_in_17:.4f}")
+
+# Ablation coupling vmaxes (one per basis; ablation values are non-negative)
+_vmax_abl_schur_17 = max(
+    _g06[c]["abl_schur"][:N_HM_17, :].max()
+    for c in CONDITIONS if c in _g06 and _g06[c]["abl_schur"] is not None
+) if any(_g06.get(c, {}).get("abl_schur") is not None for c in CONDITIONS) else 1.0
+_vmax_abl_eig_17 = max(
+    _g06[c]["abl_eig"][:N_HM_17, :].max()
+    for c in CONDITIONS if c in _g06 and _g06[c]["abl_eig"] is not None
+) if any(_g06.get(c, {}).get("abl_eig") is not None for c in CONDITIONS) else 1.0
+_vmax_abl_neu_17 = max(
+    _g06[c]["abl_neu"][:N_HM_17, :].max()
+    for c in CONDITIONS if c in _g06 and _g06[c]["abl_neu"] is not None
+) if any(_g06.get(c, {}).get("abl_neu") is not None for c in CONDITIONS) else 1.0
+print(f"Ablation vmaxes — schur={_vmax_abl_schur_17:.4f}, "
+      f"eig={_vmax_abl_eig_17:.4f}, neu={_vmax_abl_neu_17:.4f}")
 
 
 # %% G0.6 — PLOT 10: Schur → output coupling heatmap (Fixed τ | Learnable τ)
@@ -1415,6 +1446,259 @@ if SAVE_FIGS:
 plt.show()
 
 
+# %% G0.6 — PLOT 10b: Schur → output |r| heatmap (Fixed τ | Learnable τ)
+# |Pearson r| between each Schur-mode activity trace and each output bit.
+# |r| is used because the sign depends only on encoding convention; a large
+# negative r is equally indicative of strong coupling as a large positive one.
+# Requires: _g06, N_HM_17, G_FOCUS_17, FIGS_DIR, SAVE_FIGS
+
+_has_r_schur_17 = any(
+    _g06.get(c, {}).get("r_schur_tgt") is not None for c in CONDITIONS
+)
+if not _has_r_schur_17:
+    print("PLOT 10b: No Schur correlation data — skipping.")
+else:
+    _vmax_r_schur_17 = max(
+        np.abs(_g06[c]["r_schur_tgt"][:N_HM_17, :]).max()
+        for c in CONDITIONS
+        if c in _g06 and _g06[c]["r_schur_tgt"] is not None
+    )
+
+    fig, axes_10b = plt.subplots(1, 2, figsize=(max(N_HM_17 * 0.9, 6) * 2 + 1,
+                                                max(6 * 0.65, 3.5)))
+    for col, cond in enumerate(CONDITIONS):
+        ax = axes_10b[col]
+        if cond not in _g06 or _g06[cond]["r_schur_tgt"] is None:
+            ax.text(0.5, 0.5, "no data", transform=ax.transAxes, ha="center"); continue
+        d = _g06[cond]
+        _tk = min(N_HM_17, d["N"])
+        _hm = np.abs(d["r_schur_tgt"][:_tk, :].T)    # (n_bits, top_k)
+        _xlbls = [f"Schur {mi+1}\nτ={d['tauf'][mi]:.0f}\n"
+                  f"({'R' if d['blkf'][mi]=='1x1' else 'C'})"
+                  for mi in range(_tk)]
+
+        im = ax.imshow(_hm, cmap="YlOrRd", aspect="auto",
+                       vmin=0, vmax=_vmax_r_schur_17)
+        ax.set_yticks(range(d["nbits"]))
+        ax.set_yticklabels([f"Bit {i} (p={d['ppl'][i]})" for i in range(d["nbits"])],
+                            fontsize=8)
+        ax.set_xticks(range(_tk))
+        ax.set_xticklabels(_xlbls, fontsize=7)
+        ax.set_xlabel(f"Schur mode rank (top {_tk})", fontsize=9)
+        ax.set_ylabel("Output bit", fontsize=10)
+        for i in range(d["nbits"]):
+            for j in range(_tk):
+                v = _hm[i, j]
+                ax.text(j, i, f"{v:.2f}", ha="center", va="center", fontsize=6.5,
+                        color="white" if v > 0.5 * _vmax_r_schur_17 else "black")
+        plt.colorbar(im, ax=ax, label=r"$|r|$", shrink=0.75)
+        # Highlight the dominant mode per bit (highest |r|) with a coloured border
+        if d["dom_r"]:
+            for _bi, _dm in d["dom_r"].items():
+                if _dm < _tk:
+                    ax.add_patch(plt.Rectangle(
+                        (_dm - 0.5, _bi - 0.5), 1, 1,
+                        fill=False, edgecolor=f"C{_bi}", linewidth=2.0, zorder=5
+                    ))
+        acc_str = f"  acc={d['acc']:.3f}" if d["acc"] else ""
+        ax.set_title(f"{_COND_LABELS[cond]}  (g={G_FOCUS_17}{acc_str})",
+                     fontsize=11, fontweight="bold")
+
+    fig.suptitle(f"Schur → Output Correlation ($|r|$)  —  g = {G_FOCUS_17}",
+                 fontsize=12, fontweight="bold", y=1.02)
+    plt.tight_layout()
+    if SAVE_FIGS:
+        fig.savefig(os.path.join(FIGS_DIR,
+                                 f"10b_schur_output_corr_heatmap_g{G_FOCUS_17}.pdf"),
+                    bbox_inches="tight", dpi=150)
+    plt.show()
+
+
+# %% G0.6 — PLOT 10c: Eigenmode → output |r| heatmap (Fixed τ | Learnable τ)
+# |Pearson r| between each eigenmode activity trace and each output bit.
+# Requires: _g06, N_HM_17, G_FOCUS_17, FIGS_DIR, SAVE_FIGS
+
+_has_r_eig_17 = any(
+    _g06.get(c, {}).get("r_eig_tgt") is not None for c in CONDITIONS
+)
+if not _has_r_eig_17:
+    print("PLOT 10c: No eigenmode correlation data — skipping.")
+else:
+    _vmax_r_eig_17 = max(
+        np.abs(_g06[c]["r_eig_tgt"][:N_HM_17, :]).max()
+        for c in CONDITIONS
+        if c in _g06 and _g06[c]["r_eig_tgt"] is not None
+    )
+
+    fig, axes_10c = plt.subplots(1, 2, figsize=(max(N_HM_17 * 0.9, 6) * 2 + 1,
+                                                max(6 * 0.65, 3.5)))
+    for col, cond in enumerate(CONDITIONS):
+        ax = axes_10c[col]
+        if cond not in _g06 or _g06[cond]["r_eig_tgt"] is None:
+            ax.text(0.5, 0.5, "no data", transform=ax.transAxes, ha="center"); continue
+        d = _g06[cond]
+        _tk = min(N_HM_17, d["N"])
+        _hm = np.abs(d["r_eig_tgt"][:_tk, :].T)    # (n_bits, top_k)
+        _xlbls = [f"Eig {mi+1}\nτ={d['tau_eig'][mi]:.0f}" for mi in range(_tk)]
+
+        im = ax.imshow(_hm, cmap="YlOrRd", aspect="auto",
+                       vmin=0, vmax=_vmax_r_eig_17)
+        ax.set_yticks(range(d["nbits"]))
+        ax.set_yticklabels([f"Bit {i} (p={d['ppl'][i]})" for i in range(d["nbits"])],
+                            fontsize=8)
+        ax.set_xticks(range(_tk))
+        ax.set_xticklabels(_xlbls, fontsize=7)
+        ax.set_xlabel(f"Eigenmode rank (top {_tk}, by |λ|)", fontsize=9)
+        ax.set_ylabel("Output bit", fontsize=10)
+        for i in range(d["nbits"]):
+            for j in range(_tk):
+                v = _hm[i, j]
+                ax.text(j, i, f"{v:.2f}", ha="center", va="center", fontsize=6.5,
+                        color="white" if v > 0.5 * _vmax_r_eig_17 else "black")
+        plt.colorbar(im, ax=ax, label=r"$|r|$", shrink=0.75)
+        # Dominant eigenmode per bit (highest |r|)
+        _dom_eig = {bi: int(np.argmax(_hm[bi])) for bi in range(d["nbits"])}
+        for _bi, _dm in _dom_eig.items():
+            if _dm < _tk:
+                ax.add_patch(plt.Rectangle(
+                    (_dm - 0.5, _bi - 0.5), 1, 1,
+                    fill=False, edgecolor=f"C{_bi}", linewidth=2.0, zorder=5
+                ))
+        acc_str = f"  acc={d['acc']:.3f}" if d["acc"] else ""
+        ax.set_title(f"{_COND_LABELS[cond]}  (g={G_FOCUS_17}{acc_str})",
+                     fontsize=11, fontweight="bold")
+
+    fig.suptitle(f"Eigenmode → Output Correlation ($|r|$)  —  g = {G_FOCUS_17}",
+                 fontsize=12, fontweight="bold", y=1.02)
+    plt.tight_layout()
+    if SAVE_FIGS:
+        fig.savefig(os.path.join(FIGS_DIR,
+                                 f"10c_eig_output_corr_heatmap_g{G_FOCUS_17}.pdf"),
+                    bbox_inches="tight", dpi=150)
+    plt.show()
+
+
+# %% G0.6 — PLOT 10d: Schur → output ablation heatmap (Fixed τ | Learnable τ)
+# Activity-weighted output coupling: std(z_k) * |W_out Q|_k / std(ŷ).
+# Captures how much each Schur mode actually drives the output variance.
+# Requires: _g06, N_HM_17, G_FOCUS_17, _vmax_abl_schur_17, FIGS_DIR, SAVE_FIGS
+
+_has_abl_schur_17 = any(
+    _g06.get(c, {}).get("abl_schur") is not None for c in CONDITIONS
+)
+if not _has_abl_schur_17:
+    print("PLOT 10d: No Schur ablation data — skipping.")
+else:
+    fig, axes_10d = plt.subplots(1, 2, figsize=(max(N_HM_17 * 0.9, 6) * 2 + 1,
+                                                max(6 * 0.65, 3.5)))
+    for col, cond in enumerate(CONDITIONS):
+        ax = axes_10d[col]
+        if cond not in _g06 or _g06[cond]["abl_schur"] is None:
+            ax.text(0.5, 0.5, "no data", transform=ax.transAxes, ha="center"); continue
+        d = _g06[cond]
+        _tk = min(N_HM_17, d["N"])
+        _hm = d["abl_schur"][:_tk, :].T    # (n_bits, top_k)
+        _xlbls = [f"Schur {mi+1}\nτ={d['tauf'][mi]:.0f}\n"
+                  f"({'R' if d['blkf'][mi]=='1x1' else 'C'})"
+                  for mi in range(_tk)]
+
+        im = ax.imshow(_hm, cmap="YlOrRd", aspect="auto",
+                       vmin=0, vmax=_vmax_abl_schur_17)
+        ax.set_yticks(range(d["nbits"]))
+        ax.set_yticklabels([f"Bit {i} (p={d['ppl'][i]})" for i in range(d["nbits"])],
+                            fontsize=8)
+        ax.set_xticks(range(_tk))
+        ax.set_xticklabels(_xlbls, fontsize=7)
+        ax.set_xlabel(f"Schur mode rank (top {_tk})", fontsize=9)
+        ax.set_ylabel("Output bit", fontsize=10)
+        for i in range(d["nbits"]):
+            for j in range(_tk):
+                v = _hm[i, j]
+                ax.text(j, i, f"{v:.2f}", ha="center", va="center", fontsize=6.5,
+                        color="white" if v > 0.5 * _vmax_abl_schur_17 else "black")
+        plt.colorbar(im, ax=ax,
+                     label=r"$\sigma(z_k)\,|W_{\!out}Q|_k\,/\,\sigma(\hat{y})$",
+                     shrink=0.75)
+        _dom_abl = {bi: int(np.argmax(_hm[bi])) for bi in range(d["nbits"])}
+        for _bi, _dm in _dom_abl.items():
+            if _dm < _tk:
+                ax.add_patch(plt.Rectangle(
+                    (_dm - 0.5, _bi - 0.5), 1, 1,
+                    fill=False, edgecolor=f"C{_bi}", linewidth=2.0, zorder=5
+                ))
+        acc_str = f"  acc={d['acc']:.3f}" if d["acc"] else ""
+        ax.set_title(f"{_COND_LABELS[cond]}  (g={G_FOCUS_17}{acc_str})",
+                     fontsize=11, fontweight="bold")
+
+    fig.suptitle(f"Schur → Output Ablation Coupling  —  g = {G_FOCUS_17}",
+                 fontsize=12, fontweight="bold", y=1.02)
+    plt.tight_layout()
+    if SAVE_FIGS:
+        fig.savefig(os.path.join(FIGS_DIR,
+                                 f"10d_schur_output_abl_heatmap_g{G_FOCUS_17}.pdf"),
+                    bbox_inches="tight", dpi=150)
+    plt.show()
+
+
+# %% G0.6 — PLOT 10e: Eigenmode → output ablation heatmap (Fixed τ | Learnable τ)
+# Activity-weighted output coupling: std(z_k) * |W_out V|_k / std(ŷ).
+# Requires: _g06, N_HM_17, G_FOCUS_17, _vmax_abl_eig_17, FIGS_DIR, SAVE_FIGS
+
+_has_abl_eig_17 = any(
+    _g06.get(c, {}).get("abl_eig") is not None for c in CONDITIONS
+)
+if not _has_abl_eig_17:
+    print("PLOT 10e: No eigenmode ablation data — skipping.")
+else:
+    fig, axes_10e = plt.subplots(1, 2, figsize=(max(N_HM_17 * 0.9, 6) * 2 + 1,
+                                                max(6 * 0.65, 3.5)))
+    for col, cond in enumerate(CONDITIONS):
+        ax = axes_10e[col]
+        if cond not in _g06 or _g06[cond]["abl_eig"] is None:
+            ax.text(0.5, 0.5, "no data", transform=ax.transAxes, ha="center"); continue
+        d = _g06[cond]
+        _tk = min(N_HM_17, d["N"])
+        _hm = d["abl_eig"][:_tk, :].T    # (n_bits, top_k)
+        _xlbls = [f"Eig {mi+1}\nτ={d['tau_eig'][mi]:.0f}" for mi in range(_tk)]
+
+        im = ax.imshow(_hm, cmap="YlOrRd", aspect="auto",
+                       vmin=0, vmax=_vmax_abl_eig_17)
+        ax.set_yticks(range(d["nbits"]))
+        ax.set_yticklabels([f"Bit {i} (p={d['ppl'][i]})" for i in range(d["nbits"])],
+                            fontsize=8)
+        ax.set_xticks(range(_tk))
+        ax.set_xticklabels(_xlbls, fontsize=7)
+        ax.set_xlabel(f"Eigenmode rank (top {_tk}, by |λ|)", fontsize=9)
+        ax.set_ylabel("Output bit", fontsize=10)
+        for i in range(d["nbits"]):
+            for j in range(_tk):
+                v = _hm[i, j]
+                ax.text(j, i, f"{v:.2f}", ha="center", va="center", fontsize=6.5,
+                        color="white" if v > 0.5 * _vmax_abl_eig_17 else "black")
+        plt.colorbar(im, ax=ax,
+                     label=r"$\sigma(z_k)\,|W_{\!out}V|_k\,/\,\sigma(\hat{y})$",
+                     shrink=0.75)
+        _dom_abl_eig = {bi: int(np.argmax(_hm[bi])) for bi in range(d["nbits"])}
+        for _bi, _dm in _dom_abl_eig.items():
+            if _dm < _tk:
+                ax.add_patch(plt.Rectangle(
+                    (_dm - 0.5, _bi - 0.5), 1, 1,
+                    fill=False, edgecolor=f"C{_bi}", linewidth=2.0, zorder=5
+                ))
+        acc_str = f"  acc={d['acc']:.3f}" if d["acc"] else ""
+        ax.set_title(f"{_COND_LABELS[cond]}  (g={G_FOCUS_17}{acc_str})",
+                     fontsize=11, fontweight="bold")
+
+    fig.suptitle(f"Eigenmode → Output Ablation Coupling  —  g = {G_FOCUS_17}",
+                 fontsize=12, fontweight="bold", y=1.02)
+    plt.tight_layout()
+    if SAVE_FIGS:
+        fig.savefig(os.path.join(FIGS_DIR,
+                                 f"10e_eig_output_abl_heatmap_g{G_FOCUS_17}.pdf"),
+                    bbox_inches="tight", dpi=150)
+    plt.show()
+
+
 # %% G0.6 — PLOT 11: Neuron → output coupling heatmap (Fixed τ | Learnable τ)
 # Requires: _g06, N_HM_17, G_FOCUS_17, _vmax_neu_out_17, FIGS_DIR, SAVE_FIGS
 
@@ -1454,6 +1738,343 @@ if SAVE_FIGS:
     fig.savefig(os.path.join(FIGS_DIR, f"11_neuron_output_heatmap_g{G_FOCUS_17}.pdf"),
                 bbox_inches="tight", dpi=150)
 plt.show()
+
+
+# %% G0.6 — PLOT 11b: Neuron → output |r| heatmap (Fixed τ | Learnable τ)
+# |Pearson r| between each neuron's activity trace and each output bit.
+# Neurons ranked by ||w_out|| (same ordering as PLOT 11) so the two are directly
+# comparable column-by-column.
+# Requires: _g06, N_HM_17, G_FOCUS_17, FIGS_DIR, SAVE_FIGS
+
+_has_r_neu_17 = any(
+    _g06.get(c, {}).get("r_neu_tgt") is not None for c in CONDITIONS
+)
+if not _has_r_neu_17:
+    print("PLOT 11b: No neuron correlation data — skipping.")
+else:
+    _vmax_r_neu_17 = max(
+        np.abs(_g06[c]["r_neu_tgt"][:N_HM_17, :]).max()
+        for c in CONDITIONS
+        if c in _g06 and _g06[c]["r_neu_tgt"] is not None
+    )
+
+    fig, axes_11b = plt.subplots(1, 2, figsize=(max(N_HM_17 * 0.9, 6) * 2 + 1,
+                                                max(6 * 0.65, 3.5)))
+    for col, cond in enumerate(CONDITIONS):
+        ax = axes_11b[col]
+        if cond not in _g06 or _g06[cond]["r_neu_tgt"] is None:
+            ax.text(0.5, 0.5, "no data", transform=ax.transAxes, ha="center"); continue
+        d = _g06[cond]
+        _tk = min(N_HM_17, d["N"])
+        # r_neu_tgt is in original neuron order; re-sort by ||w_out|| to match PLOT 11
+        _cout_ord = np.argsort(-d["cout"].max(axis=0))   # descending by max |w_out|
+        _hm = np.abs(d["r_neu_tgt"][_cout_ord[:_tk], :].T)   # (n_bits, top_k)
+
+        im = ax.imshow(_hm, cmap="YlOrRd", aspect="auto",
+                       vmin=0, vmax=_vmax_r_neu_17)
+        ax.set_yticks(range(d["nbits"]))
+        ax.set_yticklabels([f"Bit {i} (p={d['ppl'][i]})" for i in range(d["nbits"])],
+                            fontsize=8)
+        ax.set_xticks(range(_tk))
+        ax.set_xticklabels([f"N{i+1}" for i in range(_tk)], fontsize=7)
+        ax.set_xlabel(f"Neuron rank (top {_tk}, by ||w_out||)", fontsize=9)
+        ax.set_ylabel("Output bit", fontsize=10)
+        for i in range(d["nbits"]):
+            for j in range(_tk):
+                v = _hm[i, j]
+                ax.text(j, i, f"{v:.2f}", ha="center", va="center", fontsize=6.5,
+                        color="white" if v > 0.5 * _vmax_r_neu_17 else "black")
+        plt.colorbar(im, ax=ax, label=r"$|r|$", shrink=0.75)
+        # Dominant neuron per bit (highest |r| in this sorted order)
+        _dom_neu = {bi: int(np.argmax(_hm[bi])) for bi in range(d["nbits"])}
+        for _bi, _dm in _dom_neu.items():
+            if _dm < _tk:
+                ax.add_patch(plt.Rectangle(
+                    (_dm - 0.5, _bi - 0.5), 1, 1,
+                    fill=False, edgecolor=f"C{_bi}", linewidth=2.0, zorder=5
+                ))
+        acc_str = f"  acc={d['acc']:.3f}" if d["acc"] else ""
+        ax.set_title(f"{_COND_LABELS[cond]}  (g={G_FOCUS_17}{acc_str})",
+                     fontsize=11, fontweight="bold")
+
+    fig.suptitle(f"Neuron → Output Correlation ($|r|$)  —  g = {G_FOCUS_17}",
+                 fontsize=12, fontweight="bold", y=1.02)
+    plt.tight_layout()
+    if SAVE_FIGS:
+        fig.savefig(os.path.join(FIGS_DIR,
+                                 f"11b_neuron_output_corr_heatmap_g{G_FOCUS_17}.pdf"),
+                    bbox_inches="tight", dpi=150)
+    plt.show()
+
+
+# %% G0.6 — PLOT 11d: Neuron → output ablation heatmap (Fixed τ | Learnable τ)
+# Activity-weighted output coupling: std(h_k) * |W_out|_k / std(ŷ).
+# Neurons sorted by max |W_out| (same as PLOTs 11/11b) for direct comparison.
+# Requires: _g06, N_HM_17, G_FOCUS_17, _vmax_abl_neu_17, FIGS_DIR, SAVE_FIGS
+
+_has_abl_neu_17 = any(
+    _g06.get(c, {}).get("abl_neu") is not None for c in CONDITIONS
+)
+if not _has_abl_neu_17:
+    print("PLOT 11d: No neuron ablation data — skipping.")
+else:
+    fig, axes_11d = plt.subplots(1, 2, figsize=(max(N_HM_17 * 0.9, 6) * 2 + 1,
+                                                max(6 * 0.65, 3.5)))
+    for col, cond in enumerate(CONDITIONS):
+        ax = axes_11d[col]
+        if cond not in _g06 or _g06[cond]["abl_neu"] is None:
+            ax.text(0.5, 0.5, "no data", transform=ax.transAxes, ha="center"); continue
+        d = _g06[cond]
+        _tk = min(N_HM_17, d["N"])
+        _cout_ord = np.argsort(-d["cout"].max(axis=0))
+        _hm = d["abl_neu"][_cout_ord[:_tk], :].T    # (n_bits, top_k)
+
+        im = ax.imshow(_hm, cmap="YlOrRd", aspect="auto",
+                       vmin=0, vmax=_vmax_abl_neu_17)
+        ax.set_yticks(range(d["nbits"]))
+        ax.set_yticklabels([f"Bit {i} (p={d['ppl'][i]})" for i in range(d["nbits"])],
+                            fontsize=8)
+        ax.set_xticks(range(_tk))
+        ax.set_xticklabels([f"N{i+1}" for i in range(_tk)], fontsize=7)
+        ax.set_xlabel(f"Neuron rank (top {_tk}, by max $|W_{{out}}|$)", fontsize=9)
+        ax.set_ylabel("Output bit", fontsize=10)
+        for i in range(d["nbits"]):
+            for j in range(_tk):
+                v = _hm[i, j]
+                ax.text(j, i, f"{v:.2f}", ha="center", va="center", fontsize=6.5,
+                        color="white" if v > 0.5 * _vmax_abl_neu_17 else "black")
+        plt.colorbar(im, ax=ax,
+                     label=r"$\sigma(h_k)\,|W_{\!out}|_k\,/\,\sigma(\hat{y})$",
+                     shrink=0.75)
+        _dom_abl_neu = {bi: int(np.argmax(_hm[bi])) for bi in range(d["nbits"])}
+        for _bi, _dm in _dom_abl_neu.items():
+            if _dm < _tk:
+                ax.add_patch(plt.Rectangle(
+                    (_dm - 0.5, _bi - 0.5), 1, 1,
+                    fill=False, edgecolor=f"C{_bi}", linewidth=2.0, zorder=5
+                ))
+        acc_str = f"  acc={d['acc']:.3f}" if d["acc"] else ""
+        ax.set_title(f"{_COND_LABELS[cond]}  (g={G_FOCUS_17}{acc_str})",
+                     fontsize=11, fontweight="bold")
+
+    fig.suptitle(f"Neuron → Output Ablation Coupling  —  g = {G_FOCUS_17}",
+                 fontsize=12, fontweight="bold", y=1.02)
+    plt.tight_layout()
+    if SAVE_FIGS:
+        fig.savefig(os.path.join(FIGS_DIR,
+                                 f"11d_neuron_output_abl_heatmap_g{G_FOCUS_17}.pdf"),
+                    bbox_inches="tight", dpi=150)
+    plt.show()
+
+
+# %% G0.6 — PLOT 11c: Full |r| trace — Schur / Eigenmode / Neuron (Fixed τ | Learnable τ)
+# Shows |Pearson r| vs rank for every mode/neuron and every output bit.
+# Sorting:  Schur & Eigenmode → by |λ| (largest first, same as heatmaps).
+#           Neurons            → by max |w_out| across bits (same as PLOTs 11/11b).
+# Dominant mode per bit (highest |r|) is marked with a filled circle.
+# Requires: _g06, bit_colors, G_FOCUS_17, FIGS_DIR, SAVE_FIGS
+
+_has_any_r_17 = any(
+    any(_g06.get(c, {}).get(k) is not None for c in CONDITIONS)
+    for k in ("r_schur_tgt", "r_eig_tgt", "r_neu_tgt")
+)
+if not _has_any_r_17:
+    print("PLOT 11c: No correlation data available — skipping.")
+else:
+    _ROW_KEYS_11c  = ["r_schur_tgt", "r_eig_tgt", "r_neu_tgt"]
+    _ROW_LBLS_11c  = ["Schur modes", "Eigenmodes", "Neurons"]
+    _XLAB_11c      = [
+        "Schur mode rank (sorted by |λ|, largest first)",
+        "Eigenmode rank (sorted by |λ|, largest first)",
+        "Neuron rank (sorted by max $|W_{out}|$)",
+    ]
+
+    fig, axes_11c = plt.subplots(3, 2, figsize=(14, 12), sharey="row")
+
+    for col, cond in enumerate(CONDITIONS):
+        if cond not in _g06:
+            for ri in range(3):
+                axes_11c[ri, col].text(0.5, 0.5, "no data",
+                                       transform=axes_11c[ri, col].transAxes,
+                                       ha="center"); continue
+        d      = _g06[cond]
+        _N17c  = d["N"]
+        _nb17c = d["nbits"]
+        _ranks = np.arange(1, _N17c + 1)
+
+        # Neuron sort order (||w_out||, descending) — used for row 2 only
+        _cout_ord_11c = np.argsort(-d["cout"].max(axis=0))
+
+        for ri, (rkey, rlbl, xlab) in enumerate(
+                zip(_ROW_KEYS_11c, _ROW_LBLS_11c, _XLAB_11c)):
+            ax = axes_11c[ri, col]
+            r_mat = d.get(rkey)   # (N, n_bits) or None
+
+            if r_mat is None:
+                ax.text(0.5, 0.5, "no data", transform=ax.transAxes,
+                        ha="center", va="center", fontsize=9, color="gray")
+                continue
+
+            # Re-sort neurons to match PLOT 11/11b column ordering
+            if rkey == "r_neu_tgt":
+                r_mat = r_mat[_cout_ord_11c, :]    # (N, n_bits)
+
+            _abs_r = np.abs(r_mat)                 # (N, n_bits)
+
+            for bi in range(_nb17c):
+                col_r  = _abs_r[:, bi]
+                dom_j  = int(np.argmax(col_r))
+                clr    = bit_colors[bi] if bi < len(bit_colors) else f"C{bi}"
+
+                # Full trace as a thin line
+                ax.plot(_ranks, col_r, color=clr, lw=0.8, alpha=0.55,
+                        label=f"Bit {bi} (p={d['ppl'][bi]})" if col == 0 else None)
+
+                # Dominant mode: filled dot
+                ax.scatter(_ranks[dom_j], col_r[dom_j],
+                           s=60, color=clr, edgecolors="white",
+                           linewidths=0.8, zorder=6)
+
+            ax.set_xlim(1, _N17c)
+            ax.set_ylim(0, 1.05)
+            ax.axhline(0, color="gray", lw=0.5, alpha=0.3)
+            ax.grid(True, alpha=0.12)
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+
+            if ri == 2:
+                ax.set_xlabel(xlab, fontsize=9)
+            if col == 0:
+                ax.set_ylabel(f"{rlbl}\n$|r|$", fontsize=9)
+
+            acc_str = f"  acc={d['acc']:.3f}" if d["acc"] else ""
+            if ri == 0:
+                ax.set_title(f"{_COND_LABELS[cond]}  (g={G_FOCUS_17}{acc_str})",
+                             fontsize=11, fontweight="bold")
+
+    # Single legend (bit colours) outside the figure
+    from matplotlib.lines import Line2D as _LD11c
+    _d_any = _g06[next(c for c in CONDITIONS if c in _g06)]
+    _leg11c = [
+        _LD11c([0], [0], color=bit_colors[i] if i < len(bit_colors) else f"C{i}",
+               lw=2, label=f"Bit {i}  (p={_d_any['ppl'][i]})")
+        for i in range(_d_any["nbits"])
+    ]
+    fig.legend(handles=_leg11c, fontsize=8, ncol=1,
+               loc="upper left", bbox_to_anchor=(1.01, 0.99),
+               framealpha=0.85, borderaxespad=0)
+
+    fig.suptitle(
+        f"Full $|r|$ trace — Schur / Eigenmode / Neuron  —  g = {G_FOCUS_17}\n"
+        "Filled dot = dominant mode per bit (highest $|r|$)",
+        fontsize=12, fontweight="bold", y=1.01)
+    plt.tight_layout()
+    if SAVE_FIGS:
+        fig.savefig(os.path.join(FIGS_DIR,
+                                 f"11c_full_r_trace_g{G_FOCUS_17}.pdf"),
+                    bbox_inches="tight", dpi=150)
+    plt.show()
+
+
+# %% G0.6 — PLOT 11e: Full ablation trace — Schur / Eigenmode / Neuron (Fixed τ | Learnable τ)
+# Mirrors PLOT 11c but uses activity-weighted output coupling (ablation metric)
+# instead of |Pearson r|.  Sorting follows the same convention as 11c.
+# Requires: _g06, bit_colors, G_FOCUS_17, FIGS_DIR, SAVE_FIGS
+
+_has_any_abl_17 = any(
+    any(_g06.get(c, {}).get(k) is not None for c in CONDITIONS)
+    for k in ("abl_schur", "abl_eig", "abl_neu")
+)
+if not _has_any_abl_17:
+    print("PLOT 11e: No ablation data available — skipping.")
+else:
+    _ROW_KEYS_11e = ["abl_schur", "abl_eig", "abl_neu"]
+    _ROW_LBLS_11e = ["Schur modes", "Eigenmodes", "Neurons"]
+    _XLAB_11e     = [
+        "Schur mode rank (sorted by |λ|, largest first)",
+        "Eigenmode rank (sorted by |λ|, largest first)",
+        "Neuron rank (sorted by max $|W_{out}|$)",
+    ]
+    _YLAB_11e = r"$\sigma(\mathrm{activity})\,|\mathrm{coupling}|\,/\,\sigma(\hat{y})$"
+
+    fig, axes_11e = plt.subplots(3, 2, figsize=(14, 12), sharey="row")
+
+    for col, cond in enumerate(CONDITIONS):
+        if cond not in _g06:
+            for ri in range(3):
+                axes_11e[ri, col].text(0.5, 0.5, "no data",
+                                       transform=axes_11e[ri, col].transAxes,
+                                       ha="center"); continue
+        d      = _g06[cond]
+        _N11e  = d["N"]
+        _nb11e = d["nbits"]
+        _ranks = np.arange(1, _N11e + 1)
+
+        _cout_ord_11e = np.argsort(-d["cout"].max(axis=0))
+
+        for ri, (rkey, rlbl, xlab) in enumerate(
+                zip(_ROW_KEYS_11e, _ROW_LBLS_11e, _XLAB_11e)):
+            ax = axes_11e[ri, col]
+            abl_mat = d.get(rkey)    # (N, n_bits) or None
+
+            if abl_mat is None:
+                ax.text(0.5, 0.5, "no data", transform=ax.transAxes,
+                        ha="center", va="center", fontsize=9, color="gray")
+                continue
+
+            if rkey == "abl_neu":
+                abl_mat = abl_mat[_cout_ord_11e, :]    # sort by ||w_out||
+
+            for bi in range(_nb11e):
+                col_a = abl_mat[:, bi]
+                dom_j = int(np.argmax(col_a))
+                clr   = bit_colors[bi] if bi < len(bit_colors) else f"C{bi}"
+
+                ax.plot(_ranks, col_a, color=clr, lw=0.8, alpha=0.55,
+                        label=f"Bit {bi} (p={d['ppl'][bi]})" if col == 0 else None)
+                ax.scatter(_ranks[dom_j], col_a[dom_j],
+                           s=60, color=clr, edgecolors="white",
+                           linewidths=0.8, zorder=6)
+
+            ax.set_xlim(1, _N11e)
+            ax.set_ylim(bottom=0)
+            ax.axhline(0, color="gray", lw=0.5, alpha=0.3)
+            ax.grid(True, alpha=0.12)
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+
+            if ri == 2:
+                ax.set_xlabel(xlab, fontsize=9)
+            if col == 0:
+                ax.set_ylabel(f"{rlbl}\n{_YLAB_11e}", fontsize=8)
+
+            acc_str = f"  acc={d['acc']:.3f}" if d["acc"] else ""
+            if ri == 0:
+                ax.set_title(f"{_COND_LABELS[cond]}  (g={G_FOCUS_17}{acc_str})",
+                             fontsize=11, fontweight="bold")
+
+    from matplotlib.lines import Line2D as _LD11e
+    _d_any_11e = _g06[next(c for c in CONDITIONS if c in _g06)]
+    _leg11e = [
+        _LD11e([0], [0], color=bit_colors[i] if i < len(bit_colors) else f"C{i}",
+               lw=2, label=f"Bit {i}  (p={_d_any_11e['ppl'][i]})")
+        for i in range(_d_any_11e["nbits"])
+    ]
+    fig.legend(handles=_leg11e, fontsize=8, ncol=1,
+               loc="upper left", bbox_to_anchor=(1.01, 0.99),
+               framealpha=0.85, borderaxespad=0)
+
+    fig.suptitle(
+        f"Full ablation trace — Schur / Eigenmode / Neuron  —  g = {G_FOCUS_17}\n"
+        r"Filled dot = dominant mode per bit  $\cdot$  "
+        r"metric $= \sigma(z_k)\,|\mathrm{coupling}_k|\,/\,\sigma(\hat{y})$",
+        fontsize=12, fontweight="bold", y=1.01)
+    plt.tight_layout()
+    if SAVE_FIGS:
+        fig.savefig(os.path.join(FIGS_DIR,
+                                 f"11e_full_abl_trace_g{G_FOCUS_17}.pdf"),
+                    bbox_inches="tight", dpi=150)
+    plt.show()
 
 
 # %% G0.6 — PLOT 12: Input → Schur coupling heatmap (Fixed τ | Learnable τ)
@@ -1673,6 +2294,7 @@ _holds_rt  = [h * _dt_ref for h in HOLDS]
 _hold_max  = max(_holds_rt) * 1.6
 _tau_max   = min(max(_all_tau_vals_rt) * 1.3, _hold_max * 1.5) if _all_tau_vals_rt else _hold_max
 _lim_lo_15 = min(_holds_rt) * 0.4
+_lim_hi_15 = max(_tau_max, _hold_max)   # shared upper limit → true square panels
 
 from matplotlib.lines import Line2D as _LD15
 
@@ -1697,14 +2319,14 @@ def _make_tau_hold_fig(cond: str):
     n_bits = d["nbits"]
     holds_rt = np.array([1.0 / p for p in d["ppl"]]) * dt   # real time
 
-    fig, axes = plt.subplots(3, 2, figsize=(9, 11), squeeze=False)
+    fig, axes = plt.subplots(3, 2, figsize=(8, 11), squeeze=False)
 
     for _ri, _mode in enumerate(["schur", "eig", "neu"]):
         for _ci, _meth in enumerate(["conn", "corr"]):
             ax = axes[_ri, _ci]
 
             # Diagonal reference line
-            ax.plot([_lim_lo_15, _tau_max], [_lim_lo_15, _tau_max],
+            ax.plot([_lim_lo_15, _lim_hi_15], [_lim_lo_15, _lim_hi_15],
                     "k--", lw=1.2, alpha=0.45, zorder=0)
 
             # ── Select coupling matrix and τ_eff array (in real time) ──────
@@ -1734,26 +2356,24 @@ def _make_tau_hold_fig(cond: str):
                 for bi in range(n_bits):
                     dom_j   = int(np.argmax(coup[bi]))
                     tau_dom = float(tau_v[dom_j])
-                    ax.scatter(tau_dom, float(holds_rt[bi]),
+                    ax.scatter(float(holds_rt[bi]), tau_dom,
                                s=90, marker="o",
                                color=bit_colors[bi],
                                edgecolors="white", linewidths=0.9,
                                zorder=5, clip_on=False)
 
-            # ax.set_xscale("log")
-            # ax.set_yscale("log")
-            ax.set_xlim(_lim_lo_15, _tau_max)
-            ax.set_ylim(_lim_lo_15, _hold_max)
+            ax.set_xlim(_lim_lo_15, _lim_hi_15)
+            ax.set_ylim(_lim_lo_15, _lim_hi_15)
             ax.set_aspect("equal")
             ax.grid(True, alpha=0.15, which="both")
             ax.spines["top"].set_visible(False)
             ax.spines["right"].set_visible(False)
 
             if _ri == 2:
-                ax.set_xlabel(r"$\tau_{\mathrm{eff}}$ of dominant mode (real time)",
-                              fontsize=10)
+                ax.set_xlabel("Task hold duration (real time)", fontsize=10)
             if _ci == 0:
-                ax.set_ylabel("Task hold duration (real time)", fontsize=10)
+                ax.set_ylabel(r"$\tau_{\mathrm{eff}}$ of dominant mode (real time)",
+                              fontsize=10)
 
             # Annotate neuron row to clarify which τ is on the x-axis
             _mode_lbl = _MODE_LABELS_15[_ri]
@@ -1770,7 +2390,7 @@ def _make_tau_hold_fig(cond: str):
 
     acc_str = f"  (acc={d['acc']:.3f})" if d["acc"] else ""
     fig.suptitle(
-        f"Dominant-mode $\\tau_{{\\mathrm{{eff}}}}$ vs task hold  "
+        f"Task hold vs dominant-mode $\\tau_{{\\mathrm{{eff}}}}$  "
         f"\u2014  {_COND_LABELS[cond]},  g = {G_FOCUS_17}{acc_str}",
         fontsize=12, fontweight="bold", y=1.01)
     plt.tight_layout()
