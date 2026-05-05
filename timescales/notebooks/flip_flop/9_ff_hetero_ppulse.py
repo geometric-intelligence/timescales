@@ -362,6 +362,7 @@ for g in gains:
     eigenvalues, eigvecs = np.linalg.eig(J)
 
     eig_data[g] = dict(
+        J=J,                                          # stored directly — no need to reconstruct later
         eigs=eigenvalues, eigvecs=eigvecs, W_out=W_out, W_in=W_in,
         alpha=alpha, n_bits=n_bits_g, p_pulse=p_pulse_cfg,
     )
@@ -497,6 +498,7 @@ print("2.4: PCA SVD skipped (commented out).  Forward pass is still active.")
 #           _Qf, _abs_ef, _tauf, _blkf
 
 _d    = eig_data[G_FOCUS]
+_Jf   = _d["J"]                                      # Jacobian built directly from weights
 _ef   = _d["eigs"];  _Vf  = _d["eigvecs"]
 _Wi   = _d["W_in"]; _Wo  = _d["W_out"]
 _af   = _d["alpha"]; _nbf = _d["n_bits"]
@@ -504,7 +506,6 @@ _ppf  = _d["p_pulse"]
 _pplf = _ppf if isinstance(_ppf, list) else [_ppf] * _nbf
 _Nf   = len(_ef)
 
-_Jf = np.real(_Vf @ np.diag(_ef) @ np.linalg.inv(_Vf))
 _Qf, _abs_ef, _tauf, _blkf = _schur_sort(_Jf)
 
 print(f"3A: Schur done  N={_Nf},  n_bits={_nbf}")
@@ -818,7 +819,115 @@ axes[0].legend(fontsize=8, loc="upper right")
 fig.suptitle(f"Hetero p_pulse Trajectories — g = {G_FOCUS}",
              fontsize=13, fontweight="bold", y=1.02)
 plt.tight_layout()
+fig.savefig(os.path.join(FIGS_DIR, f"P03_trajectories_g{G_FOCUS}.pdf"),
+            bbox_inches="tight", dpi=150)
 plt.show()
+
+# %% P03b  Clean presentation — 2 selected bits, u(t) and y*(t) only
+# ─────────────────────────────────────────────────────────────────────────────
+# Two panels (one per selected bit).  Each panel shows:
+#   • y*(t) — target state ∈ {0, 1}  as a step trace + light fill
+#   • u(t)  — input pulses ∈ {-1, 0, +1} as step trace + light fill
+# No network output shown.
+# ─────────────────────────────────────────────────────────────────────────────
+# Requires: _demo_inp, _demo_tgt, _p_list_demo, _pca_cfg, G_FOCUS
+
+# ── Config ────────────────────────────────────────────────────────────────────
+P03B_SEQ_IDX    = 0              # which trajectory in the batch to display
+P03B_TARGET_P   = [0.01, 0.05]   # pick bits whose p_pulse is closest to these
+P03B_T_START    = None           # first timestep to show  (None → 0)
+P03B_T_END      = None           # last  timestep to show  (None → end)
+P03B_SAVE       = True
+
+_C_TARGET = "#DA627D"   # y*(t) — deep rose
+_C_INPUT  = "#FFA5AB"   # u(t)  — salmon pink
+
+# ── Select bits ───────────────────────────────────────────────────────────────
+_p_arr_03b = np.array(_p_list_demo)
+_sel_bits_03b = [int(np.argmin(np.abs(_p_arr_03b - pv))) for pv in P03B_TARGET_P]
+# De-duplicate in case both targets map to the same bit
+_sel_bits_03b = list(dict.fromkeys(_sel_bits_03b))
+
+# ── Time window ───────────────────────────────────────────────────────────────
+_T_total = _pca_cfg["num_time_steps"]
+_t0 = P03B_T_START if P03B_T_START is not None else 0
+_t1 = P03B_T_END   if P03B_T_END   is not None else _T_total
+_t_plot = np.arange(_t0, _t1)
+
+# ── Plot ──────────────────────────────────────────────────────────────────────
+_n_panels = len(_sel_bits_03b)
+fig03b, axes03b = plt.subplots(
+    _n_panels, 1,
+    figsize=(13, 2.6 * _n_panels),
+    sharex=True,
+)
+if _n_panels == 1:
+    axes03b = [axes03b]
+
+for _row, _bit in enumerate(_sel_bits_03b):
+    ax = axes03b[_row]
+
+    _tgt_raw = _demo_tgt[P03B_SEQ_IDX, _t0:_t1, _bit].numpy()   # ∈ {0, 1}
+    _inp     = _demo_inp[P03B_SEQ_IDX, _t0:_t1, _bit].numpy()   # ∈ {-1, 0, +1}
+
+    # Remap target from {0, 1} → {-1, +1} to match input amplitude convention
+    _tgt = 2.0 * _tgt_raw - 1.0
+
+    # y*(t): step trace
+    ax.step(_t_plot, _tgt, where="post",
+            color=_C_TARGET, linewidth=1.8, label="$y^*(t)$", zorder=4)
+
+    # u(t): step trace
+    ax.step(_t_plot, _inp, where="post",
+            color=_C_INPUT, linewidth=1.4, label="$u(t)$", zorder=3)
+
+    # Horizontal baseline
+    ax.axhline(0, color="#aaaaaa", linewidth=0.6, zorder=0)
+
+    # Axis formatting
+    _avg_hold = 1.0 / max(_p_list_demo[_bit], 1e-8)
+    ax.set_ylim(-1.45, 1.45)
+    ax.set_yticks([-1, 0, 1])
+    ax.set_yticklabels(["-1", "0", "1"], fontsize=10)
+    ax.set_ylabel(
+        f"Amplitude\n$p={_p_list_demo[_bit]}$  "
+        f"(hold $\\approx {_avg_hold:.0f}$)",
+        fontsize=9,
+    )
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.grid(True, axis="x", alpha=0.12, color="#bbbbbb")
+
+axes03b[-1].set_xlabel("Time (steps)", fontsize=11)
+
+# Legend — placed outside to the right
+from matplotlib.lines import Line2D as _LD03b
+fig03b.legend(
+    handles=[
+        _LD03b([0], [0], color=_C_TARGET, lw=2.2,
+               label="$y^*(t)$ — target state"),
+        _LD03b([0], [0], color=_C_INPUT,  lw=1.6,
+               label="$u(t)$ — input pulse"),
+    ],
+    fontsize=10,
+    loc="upper left",
+    bbox_to_anchor=(1.01, 0.97),
+    framealpha=0.9,
+    borderaxespad=0,
+)
+
+fig03b.suptitle(
+    f"Het-NBFF — Example Trajectories  (g = {G_FOCUS})",
+    fontsize=12, fontweight="bold", y=1.02,
+)
+plt.tight_layout()
+if P03B_SAVE:
+    fig03b.savefig(
+        os.path.join(FIGS_DIR, f"P03b_example_traj_g{G_FOCUS}.pdf"),
+        bbox_inches="tight", dpi=150,
+    )
+plt.show()
+
 
 # %% P05-COMMENTED-OUT  Effective timescale scree — all gains
 # (commented out: superseded by the G_FOCUS detailed scree P06 below)

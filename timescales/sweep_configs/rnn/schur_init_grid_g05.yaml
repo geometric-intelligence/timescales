@@ -1,0 +1,219 @@
+# Schur-Init Grid -- HALF 1 of 2 (gain = 0.5)
+#
+# Run this on Server A. Pair with `schur_init_grid_g09.yaml` on Server B.
+#
+# Axes (this half):
+#   gain        = 0.5  (fixed)
+#   init        in {uniform, powerlaw_tau, schur_powerlaw}
+#   theta       in {full (learn_time_constants=true),
+#                   fixedA (learn_time_constants=false)}
+#   task        in {ff (flip_flop), sine (sine_wave)}
+#
+# 1 x 3 x 2 x 2 = 12 conditions; n_seeds=5 -> 60 total runs.
+#
+# Tau ranges (matched between powerlaw_tau and schur_powerlaw conditions in
+# DISCRETE-STEP units):
+#   FF (dt=0.1):   step range [10, 2000]
+#                  -> powerlaw_tau YAML units = [1, 200] (DataModule converts via dt)
+#                  -> schur tau_min/tau_max  = [10, 2000] (raw step units; surgery
+#                     operates on Jacobian eigvals which are already in step units)
+#   sine (dt=1.0): step range [10, 200]
+#                  -> powerlaw_tau YAML units = [10, 200]
+#                  -> schur tau_min/tau_max  = [10, 200]
+
+base_config: "configs/rnn/flip_flop_hetero.yaml"
+n_seeds: 5
+seeds_outermost: true
+
+fixed_overrides:
+  track_tau_trajectory: true
+  track_spectral_snapshots: true
+
+experiments:
+
+  # ============================================================
+  # FLIP-FLOP, gain = 0.5
+  # ============================================================
+
+  - name: g0.5_uniform_full_ff
+    overrides:
+      recurrent_gain: 0.5
+      learn_time_constants: true
+      init_time_constant: 1.0
+
+  - name: g0.5_powerlawtau_full_ff
+    overrides:
+      recurrent_gain: 0.5
+      learn_time_constants: true
+      init_time_constants_config:
+        type: continuous
+        distribution: powerlaw
+        exponent: 1.0
+        min_time_constant: 1.0
+        max_time_constant: 200.0
+
+  - name: g0.5_schurH_full_ff
+    overrides:
+      recurrent_gain: 0.5
+      learn_time_constants: true
+      init_time_constant: 1.0
+      wrec_init: schur_powerlaw
+      wrec_init_config:
+        beta_H: 1.0
+        tau_min: 10.0
+        tau_max: 2000.0
+        base_init: normal_scaled
+
+  - name: g0.5_uniform_fixedA_ff
+    overrides:
+      recurrent_gain: 0.5
+      learn_time_constants: false
+      time_constants_config:
+        type: discrete
+        values: [1.0]
+
+  - name: g0.5_powerlawtau_fixedA_ff
+    overrides:
+      recurrent_gain: 0.5
+      learn_time_constants: false
+      time_constants_config:
+        type: continuous
+        distribution: powerlaw
+        exponent: 1.0
+        min_time_constant: 1.0
+        max_time_constant: 200.0
+
+  - name: g0.5_schurH_fixedA_ff
+    overrides:
+      recurrent_gain: 0.5
+      learn_time_constants: false
+      time_constants_config:
+        type: discrete
+        values: [1.0]
+      wrec_init: schur_powerlaw
+      wrec_init_config:
+        beta_H: 1.0
+        tau_min: 10.0
+        tau_max: 2000.0
+        base_init: normal_scaled
+
+  # ============================================================
+  # SINE-WAVE, gain = 0.5
+  # Overrides project_name + task + sine-task knobs + dt + T.
+  # ============================================================
+
+  - name: g0.5_uniform_full_sine
+    overrides:
+      project_name: sine_wave
+      task: sine_wave
+      n_pairs: 3
+      periods: [20.0, 50.0, 100.0]
+      init_hidden_value: 1.0
+      random_phase: false
+      num_time_steps: 100
+      dt: 1.0
+      num_val_trajectories: 200
+      recurrent_gain: 0.5
+      learn_time_constants: true
+      init_time_constant: 1.0
+
+  - name: g0.5_powerlawtau_full_sine
+    overrides:
+      project_name: sine_wave
+      task: sine_wave
+      n_pairs: 3
+      periods: [20.0, 50.0, 100.0]
+      init_hidden_value: 1.0
+      random_phase: false
+      num_time_steps: 100
+      dt: 1.0
+      num_val_trajectories: 200
+      recurrent_gain: 0.5
+      learn_time_constants: true
+      init_time_constants_config:
+        type: continuous
+        distribution: powerlaw
+        exponent: 1.0
+        min_time_constant: 10.0
+        max_time_constant: 200.0
+
+  - name: g0.5_schurH_full_sine
+    overrides:
+      project_name: sine_wave
+      task: sine_wave
+      n_pairs: 3
+      periods: [20.0, 50.0, 100.0]
+      init_hidden_value: 1.0
+      random_phase: false
+      num_time_steps: 100
+      dt: 1.0
+      num_val_trajectories: 200
+      recurrent_gain: 0.5
+      learn_time_constants: true
+      init_time_constant: 1.0
+      wrec_init: schur_powerlaw
+      wrec_init_config:
+        beta_H: 1.0
+        tau_min: 10.0
+        tau_max: 200.0
+        base_init: normal_scaled
+
+  - name: g0.5_uniform_fixedA_sine
+    overrides:
+      project_name: sine_wave
+      task: sine_wave
+      n_pairs: 3
+      periods: [20.0, 50.0, 100.0]
+      init_hidden_value: 1.0
+      random_phase: false
+      num_time_steps: 100
+      dt: 1.0
+      num_val_trajectories: 200
+      recurrent_gain: 0.5
+      learn_time_constants: false
+      time_constants_config:
+        type: discrete
+        values: [1.0]
+
+  - name: g0.5_powerlawtau_fixedA_sine
+    overrides:
+      project_name: sine_wave
+      task: sine_wave
+      n_pairs: 3
+      periods: [20.0, 50.0, 100.0]
+      init_hidden_value: 1.0
+      random_phase: false
+      num_time_steps: 100
+      dt: 1.0
+      num_val_trajectories: 200
+      recurrent_gain: 0.5
+      learn_time_constants: false
+      time_constants_config:
+        type: continuous
+        distribution: powerlaw
+        exponent: 1.0
+        min_time_constant: 10.0
+        max_time_constant: 200.0
+
+  - name: g0.5_schurH_fixedA_sine
+    overrides:
+      project_name: sine_wave
+      task: sine_wave
+      n_pairs: 3
+      periods: [20.0, 50.0, 100.0]
+      init_hidden_value: 1.0
+      random_phase: false
+      num_time_steps: 100
+      dt: 1.0
+      num_val_trajectories: 200
+      recurrent_gain: 0.5
+      learn_time_constants: false
+      time_constants_config:
+        type: discrete
+        values: [1.0]
+      wrec_init: schur_powerlaw
+      wrec_init_config:
+        beta_H: 1.0
+        tau_min: 10.0
+        tau_max: 200.0
+        base_init: normal_scaled

@@ -1,0 +1,61 @@
+# Heterogeneous N-bit Flip-Flop
+#
+# 6 independent binary memories driven by signed pulses with 6 distinct
+# pulse rates (1/p ranging from 10 to 200 time steps).
+#
+# Task / training knobs are kept identical to `sine_wave_hetero.yaml`
+# so cross-task comparisons are clean. Differences are limited to
+# task-essential fields (n_bits, p_pulse).
+
+# General settings
+project_name: "flip_flop"
+model_type: "rnn"
+task: "flip_flop"
+seed: 0
+
+# Device configuration
+accelerator: "gpu"
+devices: "auto"
+
+# Task parameters
+n_bits: 6
+p_pulse: [0.005, 0.007, 0.01, 0.02, 0.05, 0.1]   # mean hold = 1/p time steps
+pulse_amplitude: 1.0
+
+# Trajectory parameters
+num_time_steps: 1000
+dt: 0.1
+
+# Model parameters
+hidden_size: 512
+activation: "Identity"
+
+# Time constant configuration
+learn_time_constants: false
+time_constants_config:
+  type: "discrete"
+  values: [1.0]
+shared_time_constant: false
+normalize_hidden: false
+zero_diag_wrec: false
+recurrent_gain: 1.0
+noise_std: 0.0
+wrec_init: "normal_scaled"
+alpha_parameterization: "exponential"
+dynamics_type: "rate"
+
+# Training parameters (step-based)
+learning_rate: 0.001
+weight_decay: 0.0001
+max_steps: 1500
+val_every_n_steps: 10
+lr_step_size: 1000
+gamma: 0.5
+batch_size: 200
+num_val_trajectories: 2000
+num_workers: 4
+
+# Logging
+viz_log_every_n_steps: 500
+grad_log_every_n_steps: 100
+grad_track_per_weight_matrix: true

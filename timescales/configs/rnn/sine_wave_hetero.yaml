@@ -1,0 +1,70 @@
+# Heterogeneous Sine-Wave Generation
+#
+# Multi-frequency sine-wave generation, the oscillatory analogue of the
+# heterogeneous flip-flop. The network must autonomously generate 3 (cos, sin)
+# pairs (= 6 output channels, matches FF n_bits=6) at distinct periods.
+#
+# Choices anchored to what's been shown to work for sine wave in this repo:
+#   - dt=1.0, periods in [20, 50, 100] STEPS  (matches gain/N/cycles sweeps)
+#   - num_time_steps=100 (1 slow cycle, 5 fast cycles; the regime that worked
+#     best in `sine_wave_hetero_cycles_sweep` -- larger T destabilised BPTT)
+#   - hidden_size, batch_size, lr schedule mirror flip_flop_hetero.yaml
+#
+# Note on dt: this config uses dt=1.0 (different from flip_flop_hetero's
+# dt=0.1). At dt=1.0 the YAML tau range and tau_eff (in steps) coincide,
+# which keeps the powerlaw_tau and schur_powerlaw conditions targeting the
+# *same* tau_eff support.
+
+# General settings
+project_name: "sine_wave"
+model_type: "rnn"
+task: "sine_wave"
+seed: 0
+
+# Device configuration
+accelerator: "gpu"
+devices: "auto"
+
+# Task parameters
+n_pairs: 3                                 # 6 output channels (cos + sin per pair)
+periods: [20.0, 50.0, 100.0]               # STEPS at dt=1.0
+init_hidden_value: 1.0
+random_phase: false
+
+# Trajectory parameters
+num_time_steps: 100                        # 1 slow cycle / 5 fast cycles
+dt: 1.0
+
+# Model parameters
+hidden_size: 512
+activation: "Identity"
+
+# Time constant configuration
+learn_time_constants: false
+time_constants_config:
+  type: "discrete"
+  values: [1.0]
+shared_time_constant: false
+normalize_hidden: false
+zero_diag_wrec: false
+recurrent_gain: 1.0
+noise_std: 0.0
+wrec_init: "normal_scaled"
+alpha_parameterization: "exponential"
+dynamics_type: "rate"
+
+# Training parameters (step-based)
+learning_rate: 0.001
+weight_decay: 0.0001
+max_steps: 1500
+val_every_n_steps: 10
+lr_step_size: 1000
+gamma: 0.5
+batch_size: 200
+num_val_trajectories: 200                  # sine targets are deterministic; 200 is plenty
+num_workers: 4
+
+# Logging
+viz_log_every_n_steps: 500
+grad_log_every_n_steps: 100
+grad_track_per_weight_matrix: true

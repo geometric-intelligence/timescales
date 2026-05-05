@@ -776,3 +776,183 @@ class GradientStatisticsCallback(L.Callback):
         # Log to wandb if available
         if wandb.run is not None:
             wandb.log({"gradient_statistics_plot": wandb.Image(plot_path)})
+
+
+class TauTrajectoryCallback(L.Callback):
+    """Snapshot per-unit time constants at every validation step.
+
+    Dumps `tau_trajectory.pt` at end of training with shape (T_snapshots, N).
+    For frozen-tau (learn_time_constants=False) runs, the trajectory has a
+    single row + a `frozen=True` flag (kept for provenance).
+    """
+
+    def __init__(self, save_dir: str):
+        super().__init__()
+        self.save_dir = save_dir
+        self.steps: list[int] = []
+        self.taus: list[torch.Tensor] = []
+        self.alphas: list[torch.Tensor] = []
+        self._frozen_recorded = False
+
+    def _model(self, pl_module):
+        return getattr(pl_module, "model", pl_module)
+
+    def _record(self, trainer, pl_module):
+        model = self._model(pl_module)
+        rnn_step = getattr(model, "rnn_step", None)
+        if rnn_step is None:
+            return
+        self.steps.append(int(trainer.global_step))
+        self.taus.append(rnn_step.current_time_constants.detach().cpu().clone())
+        self.alphas.append(rnn_step.current_alphas.detach().cpu().clone())
+
+    def on_fit_start(self, trainer, pl_module):
+        self._record(trainer, pl_module)
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if trainer.sanity_checking:
+            return
+        model = self._model(pl_module)
+        if not getattr(model, "learn_time_constants", True):
+            if self._frozen_recorded:
+                return
+            self._frozen_recorded = True
+        self._record(trainer, pl_module)
+
+    @rank_zero_only
+    def on_train_end(self, trainer, pl_module):
+        if not self.taus:
+            return
+        os.makedirs(self.save_dir, exist_ok=True)
+        model = self._model(pl_module)
+        out = {
+            "steps": torch.tensor(self.steps, dtype=torch.long),
+            "taus": torch.stack(self.taus, dim=0),
+            "alphas": torch.stack(self.alphas, dim=0),
+            "frozen": not getattr(model, "learn_time_constants", True),
+        }
+        path = os.path.join(self.save_dir, "tau_trajectory.pt")
+        torch.save(out, path)
+        print(f"Tau trajectory saved to: {path}  (shape={tuple(out['taus'].shape)})")
+
+
+class SpectralSnapshotCallback(L.Callback):
+    """Snapshot the linearised Jacobian + Schur/eigen factors at fit start and end.
+
+    Saves two .pt blobs in `save_dir`:
+      - spectral_init.pt   (before any optimizer step)
+      - spectral_final.pt  (after training)
+
+    Each blob contains:
+      W_rec, W_in, W_out, alphas, recurrent_gain
+      J = (I - A) + g A W_rec
+      Real Schur: Q (orthogonal), T_mat (quasi-triangular), eigvals_schur
+      Eigendecomposition: eigvals_eig
+      Connectivity-style couplings:
+          coup_schur:   |W_out @ Q|        (output_size, N)
+          coup_eig_re:  |Re(W_out @ V)|   (output_size, N)
+          coup_neuron:  |W_out|             (output_size, N)
+          drive_schur:  |Q.T @ (alpha * W_in)|   (N, input_size)
+          drive_neuron: |alpha * W_in|            (N, input_size)
+
+    Notes:
+      - The Jacobian is the linearisation of the *Identity* dynamics at the
+        origin. For nonlinear activations this is the linearisation point;
+        document this externally if you extend it.
+      - Correlation-based couplings (Pearson r between mode activity and
+        targets) are deferred to a post-hoc notebook pass that runs a single
+        forward sweep on val data.
+    """
+
+    def __init__(self, save_dir: str):
+        super().__init__()
+        self.save_dir = save_dir
+
+    @rank_zero_only
+    def on_fit_start(self, trainer, pl_module):
+        self._dump(pl_module, tag="init")
+
+    @rank_zero_only
+    def on_train_end(self, trainer, pl_module):
+        self._dump(pl_module, tag="final")
+
+    def _dump(self, pl_module, tag: str):
+        from scipy.linalg import schur as _schur
+
+        model = getattr(pl_module, "model", pl_module)
+        rnn_step = getattr(model, "rnn_step", None)
+        if rnn_step is None:
+            print(f"[SpectralSnapshotCallback] no rnn_step on model; skipping {tag}.")
+            return
+
+        with torch.no_grad():
+            W_rec = rnn_step.W_rec.weight.detach().cpu().numpy().astype(np.float64)
+            W_in = rnn_step.W_in.weight.detach().cpu().numpy().astype(np.float64)
+            W_in_bias = rnn_step.W_in.bias.detach().cpu().numpy().astype(np.float64) \
+                if rnn_step.W_in.bias is not None else None
+            W_out = model.W_out.weight.detach().cpu().numpy().astype(np.float64)
+            alphas = rnn_step.current_alphas.detach().cpu().numpy().astype(np.float64)
+            taus = rnn_step.current_time_constants.detach().cpu().numpy().astype(np.float64)
+
+        g = float(getattr(model, "rnn_step").recurrent_gain)
+        N = W_rec.shape[0]
+
+        J = np.diag(1.0 - alphas) + (alphas[:, None] * W_rec) * g
+
+        T_mat, Q = _schur(J, output="real")
+
+        eigvals_schur = []
+        i = 0
+        while i < N:
+            if i < N - 1 and abs(T_mat[i + 1, i]) > 1e-12:
+                a = T_mat[i, i]
+                b = T_mat[i, i + 1]
+                c = T_mat[i + 1, i]
+                d = T_mat[i + 1, i + 1]
+                disc = (a - d) ** 2 / 4.0 + b * c
+                if disc < 0:
+                    im = np.sqrt(-disc)
+                    eigvals_schur.append(complex((a + d) / 2.0, im))
+                    eigvals_schur.append(complex((a + d) / 2.0, -im))
+                else:
+                    re = np.sqrt(disc)
+                    eigvals_schur.append(complex((a + d) / 2.0 + re, 0.0))
+                    eigvals_schur.append(complex((a + d) / 2.0 - re, 0.0))
+                i += 2
+            else:
+                eigvals_schur.append(complex(T_mat[i, i], 0.0))
+                i += 1
+        eigvals_schur = np.array(eigvals_schur)
+
+        eigvals_eig, V = np.linalg.eig(J)
+
+        coup_schur = np.abs(W_out @ Q)
+        coup_eig_re = np.abs((W_out @ V).real)
+        coup_neuron = np.abs(W_out)
+        drive_schur = np.abs(Q.T @ (alphas[:, None] * W_in))
+        drive_neuron = np.abs(alphas[:, None] * W_in)
+
+        blob = {
+            "W_rec": W_rec,
+            "W_in": W_in,
+            "W_in_bias": W_in_bias,
+            "W_out": W_out,
+            "alphas": alphas,
+            "taus": taus,
+            "recurrent_gain": g,
+            "J": J,
+            "Q": Q,
+            "T_mat": T_mat,
+            "eigvals_schur": eigvals_schur,
+            "V": V,
+            "eigvals_eig": eigvals_eig,
+            "coup_schur": coup_schur,
+            "coup_eig_re": coup_eig_re,
+            "coup_neuron": coup_neuron,
+            "drive_schur": drive_schur,
+            "drive_neuron": drive_neuron,
+        }
+        os.makedirs(self.save_dir, exist_ok=True)
+        path = os.path.join(self.save_dir, f"spectral_{tag}.pt")
+        torch.save(blob, path)
+        print(f"Spectral snapshot ({tag}) saved to: {path}")
