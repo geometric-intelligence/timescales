@@ -1,0 +1,181 @@
+# Tanh (Rate vs Voltage) Dynamics Grid — 6-bit Heterogeneous Flip-Flop
+#
+# Axes:
+#   gain           in {0.5, 0.9}
+#   dynamics_type  in {rate, voltage}
+#   init           in {uniform, powerlawtau, schurH}
+#   theta          = fixedA only (τ frozen at init, A not trained)
+#
+# 2 × 2 × 3 × 1 = 12 conditions; n_seeds = 1 → 12 total runs.
+#
+# Activation: Tanh (replaces Identity of schur_init_grid).
+#
+# Rate formulation:    τ dr/dt = -r + tanh(g W r + W_in u)
+# Voltage formulation: τ dx/dt = -x + g W tanh(x) + W_in u
+#
+# Schur-init validity for tanh: surgery linearises at h=0 where tanh'(0)=1,
+# so J = (I-A) + g A W — identical to the linear case.
+#
+# Tau ranges (matched to schur_init_grid FF):
+#   powerlaw_tau YAML units: [1, 200]  (→ [10, 2000] steps at dt=0.1)
+#   schurH step-units:       [10, 2000]
+
+base_config: "configs/rnn/flip_flop_hetero.yaml"
+n_seeds: 1
+seeds_outermost: true
+
+fixed_overrides:
+  activation: "Tanh"
+  learn_time_constants: false
+  track_tau_trajectory: true
+  track_spectral_snapshots: true
+
+experiments:
+
+  # ============================================================
+  # gain = 0.5, RATE
+  # ============================================================
+
+  - name: g0.5_tanh_rate_uniform_fixedA_ff
+    overrides:
+      recurrent_gain: 0.5
+      dynamics_type: rate
+      time_constants_config:
+        type: discrete
+        values: [1.0]
+
+  - name: g0.5_tanh_rate_powerlawtau_fixedA_ff
+    overrides:
+      recurrent_gain: 0.5
+      dynamics_type: rate
+      time_constants_config:
+        type: continuous
+        distribution: powerlaw
+        exponent: 1.0
+        min_time_constant: 1.0
+        max_time_constant: 200.0
+
+  - name: g0.5_tanh_rate_schurH_fixedA_ff
+    overrides:
+      recurrent_gain: 0.5
+      dynamics_type: rate
+      time_constants_config:
+        type: discrete
+        values: [1.0]
+      wrec_init: schur_powerlaw
+      wrec_init_config:
+        beta_H: 1.0
+        tau_min: 10.0
+        tau_max: 2000.0
+        base_init: normal_scaled
+
+  # ============================================================
+  # gain = 0.5, VOLTAGE
+  # ============================================================
+
+  - name: g0.5_tanh_voltage_uniform_fixedA_ff
+    overrides:
+      recurrent_gain: 0.5
+      dynamics_type: voltage
+      time_constants_config:
+        type: discrete
+        values: [1.0]
+
+  - name: g0.5_tanh_voltage_powerlawtau_fixedA_ff
+    overrides:
+      recurrent_gain: 0.5
+      dynamics_type: voltage
+      time_constants_config:
+        type: continuous
+        distribution: powerlaw
+        exponent: 1.0
+        min_time_constant: 1.0
+        max_time_constant: 200.0
+
+  - name: g0.5_tanh_voltage_schurH_fixedA_ff
+    overrides:
+      recurrent_gain: 0.5
+      dynamics_type: voltage
+      time_constants_config:
+        type: discrete
+        values: [1.0]
+      wrec_init: schur_powerlaw
+      wrec_init_config:
+        beta_H: 1.0
+        tau_min: 10.0
+        tau_max: 2000.0
+        base_init: normal_scaled
+
+  # ============================================================
+  # gain = 0.9, RATE
+  # ============================================================
+
+  - name: g0.9_tanh_rate_uniform_fixedA_ff
+    overrides:
+      recurrent_gain: 0.9
+      dynamics_type: rate
+      time_constants_config:
+        type: discrete
+        values: [1.0]
+
+  - name: g0.9_tanh_rate_powerlawtau_fixedA_ff
+    overrides:
+      recurrent_gain: 0.9
+      dynamics_type: rate
+      time_constants_config:
+        type: continuous
+        distribution: powerlaw
+        exponent: 1.0
+        min_time_constant: 1.0
+        max_time_constant: 200.0
+
+  - name: g0.9_tanh_rate_schurH_fixedA_ff
+    overrides:
+      recurrent_gain: 0.9
+      dynamics_type: rate
+      time_constants_config:
+        type: discrete
+        values: [1.0]
+      wrec_init: schur_powerlaw
+      wrec_init_config:
+        beta_H: 1.0
+        tau_min: 10.0
+        tau_max: 2000.0
+        base_init: normal_scaled
+
+  # ============================================================
+  # gain = 0.9, VOLTAGE
+  # ============================================================
+
+  - name: g0.9_tanh_voltage_uniform_fixedA_ff
+    overrides:
+      recurrent_gain: 0.9
+      dynamics_type: voltage
+      time_constants_config:
+        type: discrete
+        values: [1.0]
+
+  - name: g0.9_tanh_voltage_powerlawtau_fixedA_ff
+    overrides:
+      recurrent_gain: 0.9
+      dynamics_type: voltage
+      time_constants_config:
+        type: continuous
+        distribution: powerlaw
+        exponent: 1.0
+        min_time_constant: 1.0
+        max_time_constant: 200.0
+
+  - name: g0.9_tanh_voltage_schurH_fixedA_ff
+    overrides:
+      recurrent_gain: 0.9
+      dynamics_type: voltage
+      time_constants_config:
+        type: discrete
+        values: [1.0]
+      wrec_init: schur_powerlaw
+      wrec_init_config:
+        beta_H: 1.0
+        tau_min: 10.0
+        tau_max: 2000.0
+        base_init: normal_scaled
