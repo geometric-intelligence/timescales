@@ -76,7 +76,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # ── Required: set these two before running anything ───────────────────────────
 sweep_dir = "/home/facosta/timescales/timescales/logs/experiments/flip_flop_hetero_ppulse_20260412_081857"
 #             ^ path to the sweep output folder (contains g_0.5/, g_0.7/, ...)
-G_FOCUS   = 0.5
+G_FOCUS   = 0.8
 #             ^ recurrent gain to analyse in detail (must be present in sweep_dir)
 
 # ── Optional: secondary settings (safe to leave at defaults) ─────────────────
@@ -320,7 +320,7 @@ _palette = ["#2a9d8f", "#e76f51", "#264653", "#e9c46a", "#f4a261", "#606c38", "#
 COLORS   = {g: _palette[i % len(_palette)] for i, g in enumerate(gains)}
 
 gains_plot = [g for g in gains if g not in EXCLUDE_GAINS]
-_vir     = plt.cm.viridis(np.linspace(0.15, 0.85, max(len(gains_plot) - 1, 1) + 1))
+_vir     = plt.cm.YlOrRd(np.linspace(0.25, 0.90, max(len(gains_plot) - 1, 1) + 1))
 COLORS_V = {g: _vir[i] for i, g in enumerate(gains_plot)}
 
 bit_colors = [f"C{i}" for i in range(10)]   # generic bit colours (re-used by scree)
@@ -754,10 +754,14 @@ ax.set_xlabel("Training step", fontsize=12)
 ax.set_ylabel("Validation loss", fontsize=12)
 ax.set_yscale("log")
 ax.grid(True, alpha=0.3)
-ax.legend(fontsize=10, loc="upper right", bbox_to_anchor=(1.0, 0.82))
+ax.legend(fontsize=10, loc="upper left", bbox_to_anchor=(1.02, 1.0),
+          framealpha=0.85, borderaxespad=0)
 fig.suptitle("Hetero p_pulse Flip-Flop: Training Curves",
              fontsize=14, fontweight="bold", y=1.02)
 plt.tight_layout()
+if SAVE_FIGS:
+    fig.savefig(os.path.join(FIGS_DIR, f"P01_loss_g{G_FOCUS}.pdf"),
+                bbox_inches="tight", dpi=150)
 plt.show()
 
 # %% P02  Training accuracy curves
@@ -779,6 +783,10 @@ ax.legend(fontsize=10, loc="lower right")
 fig.suptitle("Hetero p_pulse Flip-Flop: Accuracy",
              fontsize=14, fontweight="bold", y=1.02)
 plt.tight_layout()
+
+if SAVE_FIGS:
+    fig.savefig(os.path.join(FIGS_DIR, f"P02_accuracy_g{G_FOCUS}.pdf"),
+                bbox_inches="tight", dpi=150)
 plt.show()
 
 # %% P03  Example trajectories — G_FOCUS only
@@ -839,8 +847,8 @@ P03B_T_START    = None           # first timestep to show  (None → 0)
 P03B_T_END      = None           # last  timestep to show  (None → end)
 P03B_SAVE       = True
 
-_C_TARGET = "#DA627D"   # y*(t) — deep rose
-_C_INPUT  = "#FFA5AB"   # u(t)  — salmon pink
+_C_TARGET = "#3A86FF"    # y*(t)
+_C_INPUT  = "#DA627D"   # u(t)  
 
 # ── Select bits ───────────────────────────────────────────────────────────────
 _p_arr_03b = np.array(_p_list_demo)
@@ -875,11 +883,11 @@ for _row, _bit in enumerate(_sel_bits_03b):
 
     # y*(t): step trace
     ax.step(_t_plot, _tgt, where="post",
-            color=_C_TARGET, linewidth=1.8, label="$y^*(t)$", zorder=4)
+            color=_C_TARGET, linewidth=4, label="$y^*(t)$", zorder=4, linestyle="--")
 
     # u(t): step trace
     ax.step(_t_plot, _inp, where="post",
-            color=_C_INPUT, linewidth=1.4, label="$u(t)$", zorder=3)
+            color=_C_INPUT, linewidth=4, label="$u(t)$", zorder=3)
 
     # Horizontal baseline
     ax.axhline(0, color="#aaaaaa", linewidth=0.6, zorder=0)
@@ -887,6 +895,7 @@ for _row, _bit in enumerate(_sel_bits_03b):
     # Axis formatting
     _avg_hold = 1.0 / max(_p_list_demo[_bit], 1e-8)
     ax.set_ylim(-1.45, 1.45)
+    ax.set_xlim(0, 400)
     ax.set_yticks([-1, 0, 1])
     ax.set_yticklabels(["-1", "0", "1"], fontsize=10)
     ax.set_ylabel(
@@ -1888,6 +1897,89 @@ if SAVE_FIGS:
     fig.savefig(os.path.join(FIGS_DIR, f"P05_spectrum_g{G_FOCUS}.pdf"),
                 bbox_inches="tight", dpi=150)
 plt.show()
+
+
+# %% P05c  Eigenvalue spectrum — all gains, untrained + trained overlay
+# Requires: eig_data, gains_plot, df, FIGS_DIR
+# Colors match notebooks/schur_init_grid/2_coupling_spectra.py
+_C_UNT_P = "#27d3f5"   # untrained eigenvalues (light blue)
+_C_TRN_P = "#f54927"   # trained eigenvalues   (dark orange)
+_C_UC_P  = "#222222"   # unit circle           (near-black)
+
+_g_list_p  = [g for g in gains_plot if g in eig_data]
+_n_g_p     = len(_g_list_p)
+_ncols_p   = min(_n_g_p, 5)
+_nrows_p   = int(np.ceil(_n_g_p / _ncols_p))
+_theta_p   = np.linspace(0, 2 * np.pi, 512)
+
+fig_p, axes_p = plt.subplots(
+    _nrows_p, _ncols_p,
+    figsize=(3.2 * _ncols_p, 3.2 * _nrows_p),
+    squeeze=False,
+)
+
+for _pi, g in enumerate(_g_list_p):
+    ax = axes_p[_pi // _ncols_p, _pi % _ncols_p]
+
+    # ── Untrained eigenvalues — loaded from untrained.ckpt ─────────────────
+    _row_p    = df[df["gain"] == g].iloc[0]
+    _sp_p     = _row_p["seed_path"]
+    _unt_ckpt = os.path.join(_sp_p, "checkpoints", "untrained.ckpt")
+
+    if os.path.exists(_unt_ckpt):
+        _sd_u   = torch.load(_unt_ckpt, map_location="cpu", weights_only=False)
+        _Wrec_u = None
+        for _k, _v in _sd_u["state_dict"].items():
+            if "W_rec.weight" in _k:
+                _Wrec_u = _v.numpy(); break
+        if _Wrec_u is not None:
+            _rc_u    = eig_data[g]                    # reuse already-loaded config values
+            _alpha_u = _rc_u["alpha"]
+            _N_u     = _Wrec_u.shape[0]
+            _J_u     = (1.0 - _alpha_u) * np.eye(_N_u) + _alpha_u * g * _Wrec_u
+            _eigs_u  = np.linalg.eig(_J_u)[0]
+            ax.scatter(
+                _eigs_u.real, _eigs_u.imag,
+                s=7, c=_C_UNT_P, alpha=0.50, edgecolors="none", zorder=2,
+                label="untrained" if _pi == 0 else None,
+            )
+
+    # ── Trained eigenvalues — already in eig_data ──────────────────────────
+    ax.scatter(
+        eig_data[g]["eigs"].real, eig_data[g]["eigs"].imag,
+        s=9, c=_C_TRN_P, alpha=0.65, edgecolors="none", zorder=3,
+        label="trained" if _pi == 0 else None,
+    )
+
+    # ── Unit circle ────────────────────────────────────────────────────────
+    ax.plot(
+        np.cos(_theta_p), np.sin(_theta_p),
+        color=_C_UC_P, ls="--", lw=0.9, alpha=0.70, zorder=1,
+        label="unit circle" if _pi == 0 else None,
+    )
+    ax.axhline(0, color=_C_UC_P, lw=0.30, alpha=0.25, zorder=0)
+    ax.axvline(0, color=_C_UC_P, lw=0.30, alpha=0.25, zorder=0)
+
+    ax.set_xlim(0.6, 1.05)
+    ax.set_ylim(-0.225, 0.225)
+    ax.set_box_aspect(1)
+    ax.set_title(f"g = {g}", fontsize=11, fontweight="bold")
+    ax.set_xlabel("Re(λ)", fontsize=9)
+    ax.set_ylabel("Im(λ)", fontsize=9)
+
+# Hide any unused axes in the last row
+for _pi in range(_n_g_p, _nrows_p * _ncols_p):
+    axes_p[_pi // _ncols_p, _pi % _ncols_p].set_visible(False)
+
+axes_p[0, 0].legend(fontsize=8, loc="upper left", framealpha=0.85)
+fig_p.suptitle("Jacobian eigenvalue spectrum — all gains",
+               fontsize=13, fontweight="bold")
+plt.tight_layout()
+if SAVE_FIGS:
+    fig_p.savefig(os.path.join(FIGS_DIR, "P05c_spectrum_all_gains.pdf"),
+                  bbox_inches="tight", dpi=150)
+plt.show()
+
 
 # %% P06  Effective timescale scree — G_FOCUS detailed (correlation-highlighted)
 # Requires: _dom_r, eig_data, G_FOCUS, _Nf, bit_colors, _holds, _pplf, _nbf, FIGS_DIR

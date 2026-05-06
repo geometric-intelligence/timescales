@@ -18,6 +18,12 @@ __pycache__/
 # Generated figures
 timescales/notebooks/**/*.pdf
 
+# Notebook cache directories (precomputed .npy arrays)
+timescales/notebooks/**/.cache/
+
+# Generated CSV tables
+timescales/notebooks/**/best_seeds.csv
+
 
 # Sandbox results
 sandbox/**/results/

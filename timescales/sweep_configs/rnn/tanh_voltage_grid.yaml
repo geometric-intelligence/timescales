@@ -1,0 +1,109 @@
+# Tanh Voltage Dynamics Grid — 6-bit Heterogeneous Flip-Flop
+#
+# Focused follow-up to tanh_dyn_grid.yaml:
+#   - Voltage dynamics only  (τ dx/dt = -x + g W tanh(x) + W_in u)
+#   - No schurH init  (uniform and power-law τ only)
+#   - Both θ conditions: fixedA (τ frozen) and full (τ learnable)
+#
+# Axes:
+#   gain    in {0.5, 0.9}
+#   init    in {uniform, powerlawtau}
+#   theta   in {fixedA, full}
+#
+# 2 × 2 × 2 = 8 conditions; n_seeds = 5 → 40 total runs.
+
+base_config: "configs/rnn/flip_flop_hetero.yaml"
+n_seeds: 5
+seeds_outermost: true
+
+fixed_overrides:
+  activation: "Tanh"
+  dynamics_type: voltage
+  track_tau_trajectory: true
+  track_spectral_snapshots: true
+
+experiments:
+
+  # ============================================================
+  # gain = 0.5
+  # ============================================================
+
+  - name: g0.5_tanh_voltage_uniform_fixedA_ff
+    overrides:
+      recurrent_gain: 0.5
+      learn_time_constants: false
+      time_constants_config:
+        type: discrete
+        values: [1.0]
+
+  - name: g0.5_tanh_voltage_uniform_full_ff
+    overrides:
+      recurrent_gain: 0.5
+      learn_time_constants: true
+      init_time_constants_config:
+        type: discrete
+        values: [1.0]
+
+  - name: g0.5_tanh_voltage_powerlawtau_fixedA_ff
+    overrides:
+      recurrent_gain: 0.5
+      learn_time_constants: false
+      time_constants_config:
+        type: continuous
+        distribution: powerlaw
+        exponent: 1.0
+        min_time_constant: 1.0
+        max_time_constant: 200.0
+
+  - name: g0.5_tanh_voltage_powerlawtau_full_ff
+    overrides:
+      recurrent_gain: 0.5
+      learn_time_constants: true
+      init_time_constants_config:
+        type: continuous
+        distribution: powerlaw
+        exponent: 1.0
+        min_time_constant: 1.0
+        max_time_constant: 200.0
+
+  # ============================================================
+  # gain = 0.9
+  # ============================================================
+
+  - name: g0.9_tanh_voltage_uniform_fixedA_ff
+    overrides:
+      recurrent_gain: 0.9
+      learn_time_constants: false
+      time_constants_config:
+        type: discrete
+        values: [1.0]
+
+  - name: g0.9_tanh_voltage_uniform_full_ff
+    overrides:
+      recurrent_gain: 0.9
+      learn_time_constants: true
+      init_time_constants_config:
+        type: discrete
+        values: [1.0]
+
+  - name: g0.9_tanh_voltage_powerlawtau_fixedA_ff
+    overrides:
+      recurrent_gain: 0.9
+      learn_time_constants: false
+      time_constants_config:
+        type: continuous
+        distribution: powerlaw
+        exponent: 1.0
+        min_time_constant: 1.0
+        max_time_constant: 200.0
+
+  - name: g0.9_tanh_voltage_powerlawtau_full_ff
+    overrides:
+      recurrent_gain: 0.9
+      learn_time_constants: true
+      init_time_constants_config:
+        type: continuous
+        distribution: powerlaw
+        exponent: 1.0
+        min_time_constant: 1.0
+        max_time_constant: 200.0
