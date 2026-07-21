@@ -557,6 +557,7 @@ class RNNLightning(L.LightningModule):
         eps_alpha: float = 1e-2,
         lr_interval: str = "epoch",
         init_hidden_value: float | None = None,
+        signed_output_threshold: float = 0.33,
     ) -> None:
         """
         :param model: The RNN model.
@@ -570,6 +571,8 @@ class RNNLightning(L.LightningModule):
         :param lr_interval: LR scheduler interval — "epoch" or "step".
         :param init_hidden_value: If set, initialize all hidden units to this
             scalar value instead of zeros (used by sine_wave task).
+        :param signed_output_threshold: Threshold used to binarize signed
+            flip-flop outputs into {-1, 0, +1} for accuracy.
         """
         super().__init__()
         self.model = model
@@ -582,10 +585,11 @@ class RNNLightning(L.LightningModule):
         self.eps_alpha = eps_alpha
         self.lr_interval = lr_interval
         self.init_hidden_value = init_hidden_value
+        self.signed_output_threshold = signed_output_threshold
         
         if task in ("binary_counter", "flip_flop"):
             self.loss_fn = nn.BCEWithLogitsLoss(reduction='none')
-        elif task in ("teacher_student", "sine_wave"):
+        elif task in ("teacher_student", "sine_wave", "signed_flip_flop"):
             self.loss_fn = nn.MSELoss(reduction='none')
 
         if precondition_gradients:
@@ -611,7 +615,7 @@ class RNNLightning(L.LightningModule):
                 for i in range(n_channels)
             }
             return total_loss, per_channel_dict
-        elif self.task in ("teacher_student", "sine_wave"):
+        elif self.task in ("teacher_student", "sine_wave", "signed_flip_flop"):
             batch_size, seq_len, n_channels = outputs.shape
             outputs_flat = outputs.reshape(-1, n_channels)
             targets_flat = targets.reshape(-1, n_channels)
@@ -631,6 +635,18 @@ class RNNLightning(L.LightningModule):
     ) -> tuple[torch.Tensor | None, dict[str, float] | None]:
         if self.task in ("binary_counter", "flip_flop"):
             preds = (torch.sigmoid(outputs) > 0.5).float()
+            per_channel_acc = (preds == targets).float().mean(dim=(0, 1))
+            overall_acc = per_channel_acc.mean()
+            per_channel_dict = {
+                f"channel_{i}": per_channel_acc[i].item()
+                for i in range(per_channel_acc.shape[0])
+            }
+            return overall_acc, per_channel_dict
+        elif self.task == "signed_flip_flop":
+            threshold = self.signed_output_threshold
+            preds = torch.zeros_like(outputs)
+            preds = torch.where(outputs > threshold, torch.ones_like(preds), preds)
+            preds = torch.where(outputs < -threshold, -torch.ones_like(preds), preds)
             per_channel_acc = (preds == targets).float().mean(dim=(0, 1))
             overall_acc = per_channel_acc.mean()
             per_channel_dict = {

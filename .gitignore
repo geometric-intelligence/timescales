@@ -17,6 +17,10 @@ __pycache__/
 
 # Generated figures
 timescales/notebooks/**/*.pdf
+loss_landscape.png
+output.pdf
+plot_landscape.py
+local_artifacts/
 
 # Notebook cache directories (precomputed .npy arrays)
 timescales/notebooks/**/.cache/
