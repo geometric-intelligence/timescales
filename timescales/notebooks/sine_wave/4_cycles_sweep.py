@@ -304,6 +304,7 @@ if SAVE_FIGS:
     fig.savefig(os.path.join(FIGS_DIR, "val_r2.pdf"), bbox_inches="tight", dpi=150)
 plt.show()
 
+
 # %% P_TRAJ  Example output trajectories — 2 selected frequencies
 # ─────────────────────────────────────────────────────────────────────────────
 # For a chosen trained network, show the network output y(t) and the target
@@ -378,11 +379,11 @@ for _row_i, _pair_k in enumerate(_sel_pairs_ptraj):
             label="$y^*(t)$ — target" if _row_i == 0 else None, zorder=4)
 
     # Network output
-    if not _div_ptraj and _out_ptraj is not None:
-        ax.plot(_t_ax_ptraj, _out_ptraj[:, _ic],
-                color=_C_OUTPUT_SW, linewidth=1.4,
-                label="$y(t)$ — network output" if _row_i == 0 else None,
-                zorder=3)
+    # if not _div_ptraj and _out_ptraj is not None:
+    #     ax.plot(_t_ax_ptraj, _out_ptraj[:, _ic],
+    #             color=_C_OUTPUT_SW, linewidth=1.4,
+    #             label="$y(t)$ — network output" if _row_i == 0 else None,
+    #             zorder=3)
 
     # Horizontal baseline
     ax.axhline(0, color="#cccccc", linewidth=0.5, zorder=0)

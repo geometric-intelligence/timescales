@@ -31,6 +31,7 @@ from callbacks import (
     GradientStatisticsCallback,
     TauTrajectoryCallback,
     SpectralSnapshotCallback,
+    SpectralTrajectoryCallback,
 )
 from timescales.analysis.measurements import PositionDecodingMeasurement
 from timescales.datamodules import (
@@ -38,6 +39,7 @@ from timescales.datamodules import (
     PathIntegration1DDataModule,
     HierarchicalCounterDataModule,
     FlipFlopDataModule,
+    SignedFlipFlopDataModule,
     NullDataModule,
     TeacherStudentDataModule,
     SineWaveDataModule,
@@ -154,6 +156,19 @@ def create_datamodule(config: dict):
         config["input_size"] = datamodule.input_size
         config["output_size"] = datamodule.output_size
 
+    elif task == "signed_flip_flop":
+        datamodule = SignedFlipFlopDataModule(
+            n_bits=config["n_bits"],
+            p_pulse=config["p_pulse"],
+            pulse_amplitude=config.get("pulse_amplitude", 1.0),
+            num_time_steps=config["num_time_steps"],
+            num_val_trajectories=config.get("num_val_trajectories", 100),
+            batch_size=config["batch_size"],
+            num_workers=config["num_workers"],
+        )
+        config["input_size"] = datamodule.input_size
+        config["output_size"] = datamodule.output_size
+
     elif task == "teacher_student":
         datamodule = TeacherStudentDataModule(
             teacher_hidden_size=config["teacher_hidden_size"],
@@ -257,6 +272,7 @@ def _create_rnn_model(config: dict):
         eps_alpha=config.get("eps_alpha", 1e-2),
         lr_interval=lr_interval,
         init_hidden_value=config.get("init_hidden_value"),
+        signed_output_threshold=config.get("signed_output_threshold", 0.33),
     )
     return model, lightning_module
 
@@ -368,6 +384,16 @@ def _build_callbacks(config: dict, run_dir: str, datamodule=None):
 
     if config.get("track_spectral_snapshots", True) and config.get("model_type") == "rnn":
         callbacks.append(SpectralSnapshotCallback(save_dir=run_dir))
+
+    if config.get("track_spectral_trajectory", False) and config.get("model_type") == "rnn":
+        callbacks.append(SpectralTrajectoryCallback(
+            save_dir=run_dir,
+            top_k=config.get("spectral_trajectory_top_k", 2),
+            log_every_n_validation_epochs=config.get(
+                "spectral_trajectory_log_every_n_validation_epochs", 1
+            ),
+            include_wrec=config.get("spectral_trajectory_include_wrec", True),
+        ))
 
     if config.get("track_gradients", False):
         callbacks.append(GradientStatisticsCallback(

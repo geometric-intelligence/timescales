@@ -1,0 +1,67 @@
+# Signed 2-bit asymmetric flip-flop demo.
+#
+# Translation of the standalone quick experiment into the repository training
+# stack. The task uses signed -1/+1 targets and per-channel pulse rates.
+
+# General settings
+project_name: "flip_flop_asym_demo"
+model_type: "rnn"
+task: "signed_flip_flop"
+seed: 0
+
+# Device configuration
+accelerator: "gpu"
+devices: "auto"
+
+# Task parameters
+n_bits: 2
+p_pulse: [0.01, 0.05]
+pulse_amplitude: 1.0
+signed_output_threshold: 0.33
+
+# Trajectory parameters
+num_time_steps: 500
+dt: 0.005
+
+# Model parameters
+hidden_size: 100
+activation: "Tanh"
+# RNN dynamics:
+#   "rate":    tau dr/dt = -r + phi(g W_rec r + W_in u)
+#   "voltage": tau dx/dt = -x + g W_rec phi(x) + W_in u
+# To run a voltage tanh RNN, set activation: "Tanh" and dynamics_type: "voltage".
+dynamics_type: "voltage"
+
+# Time constant configuration: alpha = dt / tau = 0.5
+learn_time_constants: false
+time_constants_config:
+  type: "discrete"
+  values: [0.01]
+shared_time_constant: false
+normalize_hidden: false
+zero_diag_wrec: false
+recurrent_gain: 0.1
+noise_std: 0.0
+wrec_init: "normal_scaled"
+alpha_parameterization: "linear"
+
+# Training parameters (step-based: fresh data generated every step)
+learning_rate: 0.001
+weight_decay: 0.0
+max_steps: 1000
+val_every_n_steps: 1
+lr_step_size: 1000
+gamma: 1.0
+batch_size: 100
+num_val_trajectories: 100
+num_workers: 0
+
+# Logging / analysis artifacts
+track_gradients: true
+grad_log_every_n_steps: 1
+grad_track_per_weight_matrix: true
+track_spectral_snapshots: true
+track_spectral_trajectory: true
+spectral_trajectory_top_k: 2
+spectral_trajectory_log_every_n_validation_epochs: 1
+spectral_trajectory_include_wrec: true

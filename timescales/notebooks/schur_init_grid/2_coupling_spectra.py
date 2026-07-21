@@ -58,7 +58,7 @@ SWEEP_DIRS = [
 
 # ── Condition to analyse ──────────────────────────────────────────────────────
 
-ANALYSIS_TASK   = "sine"          # "ff" | "sine"
+ANALYSIS_TASK   = "ff"          # "ff" | "sine"
 ANALYSIS_GAIN   = 0.5           # 0.5 | 0.9
 ANALYSIS_INIT   = "uniform"     # "uniform" | "powerlawtau" | "schurH"
 ANALYSIS_THETA  = "full"      # "full" | "fixedA"

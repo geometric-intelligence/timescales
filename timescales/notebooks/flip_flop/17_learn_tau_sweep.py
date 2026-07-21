@@ -2362,8 +2362,10 @@ def _make_tau_hold_fig(cond: str):
                                edgecolors="white", linewidths=0.9,
                                zorder=5, clip_on=False)
 
-            ax.set_xlim(_lim_lo_15, _lim_hi_15)
-            ax.set_ylim(_lim_lo_15, _lim_hi_15)
+            # ax.set_xlim(_lim_lo_15, _lim_hi_15)
+            # ax.set_ylim(_lim_lo_15, _lim_hi_15)
+            ax.set_xscale("log")
+            ax.set_yscale("log")
             ax.set_aspect("equal")
             ax.grid(True, alpha=0.15, which="both")
             ax.spines["top"].set_visible(False)

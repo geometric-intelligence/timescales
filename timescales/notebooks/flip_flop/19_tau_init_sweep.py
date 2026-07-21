@@ -328,7 +328,8 @@ for init_type in INIT_TYPES:
                        s=80, facecolors="none", edgecolors=clr,
                        linewidths=1.5, zorder=4)
 
-ax.set_yscale("log")
+#ax.set_yscale("log")
+ax.set_ylim(0, 1100)
 ax.set_xticks(GAINS)
 ax.set_xticklabels([f"g = {g}" for g in GAINS], fontsize=11)
 ax.set_xlim(min(GAINS) - 0.15, max(GAINS) + 0.15)

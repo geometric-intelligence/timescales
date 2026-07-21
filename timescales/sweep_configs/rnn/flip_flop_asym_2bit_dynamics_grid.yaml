@@ -1,0 +1,172 @@
+# Signed 2-bit asymmetric flip-flop dynamics grid.
+#
+# Axes:
+#   model variant in:
+#     - linear       : activation=Identity, dynamics_type=rate
+#     - tanh_rate    : activation=Tanh,     dynamics_type=rate
+#     - tanh_voltage : activation=Tanh,     dynamics_type=voltage
+#     - relu_rate    : activation=ReLU,     dynamics_type=rate
+#     - relu_voltage : activation=ReLU,     dynamics_type=voltage
+#   fixed tau in {0.005, 0.01, 0.02}
+#   recurrent scale g in {0.05, 0.1, 0.2}
+#
+# Total: 5 x 3 x 3 = 45 runs.
+#
+# Note: recurrent_gain is used as the effective recurrent initialization scale
+# because wrec_init="normal_scaled" initializes W_rec ~ N(0, 1/sqrt(N)) and the
+# model applies recurrent_gain outside W_rec.
+
+base_config: "configs/rnn/flip_flop_asym_2bit_demo.yaml"
+n_seeds: 1
+seeds_outermost: true
+
+fixed_overrides:
+  task: "signed_flip_flop"
+  n_bits: 2
+  p_pulse: [0.01, 0.05]
+  num_time_steps: 500
+  hidden_size: 100
+  learn_time_constants: false
+  wrec_init: "normal_scaled"
+  zero_diag_wrec: false
+  alpha_parameterization: "linear"
+  track_gradients: true
+  grad_log_every_n_steps: 1
+  grad_track_per_weight_matrix: true
+  track_spectral_snapshots: true
+  track_spectral_trajectory: true
+  spectral_trajectory_top_k: 2
+  spectral_trajectory_log_every_n_validation_epochs: 1
+  spectral_trajectory_include_wrec: true
+
+_variant_overrides:
+  linear: &linear_variant
+    activation: "Identity"
+    dynamics_type: "rate"
+  tanh_rate: &tanh_rate_variant
+    activation: "Tanh"
+    dynamics_type: "rate"
+  tanh_voltage: &tanh_voltage_variant
+    activation: "Tanh"
+    dynamics_type: "voltage"
+  relu_rate: &relu_rate_variant
+    activation: "ReLU"
+    dynamics_type: "rate"
+  relu_voltage: &relu_voltage_variant
+    activation: "ReLU"
+    dynamics_type: "voltage"
+
+_tau_overrides:
+  tau0.005: &tau_0_005
+    time_constants_config:
+      type: "discrete"
+      values: [0.005]
+  tau0.01: &tau_0_01
+    time_constants_config:
+      type: "discrete"
+      values: [0.01]
+  tau0.02: &tau_0_02
+    time_constants_config:
+      type: "discrete"
+      values: [0.02]
+
+experiments:
+  # linear
+  - name: linear_tau0.005_g0.05
+    overrides: {<<: [*linear_variant, *tau_0_005], recurrent_gain: 0.05}
+  - name: linear_tau0.005_g0.1
+    overrides: {<<: [*linear_variant, *tau_0_005], recurrent_gain: 0.1}
+  - name: linear_tau0.005_g0.2
+    overrides: {<<: [*linear_variant, *tau_0_005], recurrent_gain: 0.2}
+  - name: linear_tau0.01_g0.05
+    overrides: {<<: [*linear_variant, *tau_0_01], recurrent_gain: 0.05}
+  - name: linear_tau0.01_g0.1
+    overrides: {<<: [*linear_variant, *tau_0_01], recurrent_gain: 0.1}
+  - name: linear_tau0.01_g0.2
+    overrides: {<<: [*linear_variant, *tau_0_01], recurrent_gain: 0.2}
+  - name: linear_tau0.02_g0.05
+    overrides: {<<: [*linear_variant, *tau_0_02], recurrent_gain: 0.05}
+  - name: linear_tau0.02_g0.1
+    overrides: {<<: [*linear_variant, *tau_0_02], recurrent_gain: 0.1}
+  - name: linear_tau0.02_g0.2
+    overrides: {<<: [*linear_variant, *tau_0_02], recurrent_gain: 0.2}
+
+  # tanh rate
+  - name: tanh_rate_tau0.005_g0.05
+    overrides: {<<: [*tanh_rate_variant, *tau_0_005], recurrent_gain: 0.05}
+  - name: tanh_rate_tau0.005_g0.1
+    overrides: {<<: [*tanh_rate_variant, *tau_0_005], recurrent_gain: 0.1}
+  - name: tanh_rate_tau0.005_g0.2
+    overrides: {<<: [*tanh_rate_variant, *tau_0_005], recurrent_gain: 0.2}
+  - name: tanh_rate_tau0.01_g0.05
+    overrides: {<<: [*tanh_rate_variant, *tau_0_01], recurrent_gain: 0.05}
+  - name: tanh_rate_tau0.01_g0.1
+    overrides: {<<: [*tanh_rate_variant, *tau_0_01], recurrent_gain: 0.1}
+  - name: tanh_rate_tau0.01_g0.2
+    overrides: {<<: [*tanh_rate_variant, *tau_0_01], recurrent_gain: 0.2}
+  - name: tanh_rate_tau0.02_g0.05
+    overrides: {<<: [*tanh_rate_variant, *tau_0_02], recurrent_gain: 0.05}
+  - name: tanh_rate_tau0.02_g0.1
+    overrides: {<<: [*tanh_rate_variant, *tau_0_02], recurrent_gain: 0.1}
+  - name: tanh_rate_tau0.02_g0.2
+    overrides: {<<: [*tanh_rate_variant, *tau_0_02], recurrent_gain: 0.2}
+
+  # tanh voltage
+  - name: tanh_voltage_tau0.005_g0.05
+    overrides: {<<: [*tanh_voltage_variant, *tau_0_005], recurrent_gain: 0.05}
+  - name: tanh_voltage_tau0.005_g0.1
+    overrides: {<<: [*tanh_voltage_variant, *tau_0_005], recurrent_gain: 0.1}
+  - name: tanh_voltage_tau0.005_g0.2
+    overrides: {<<: [*tanh_voltage_variant, *tau_0_005], recurrent_gain: 0.2}
+  - name: tanh_voltage_tau0.01_g0.05
+    overrides: {<<: [*tanh_voltage_variant, *tau_0_01], recurrent_gain: 0.05}
+  - name: tanh_voltage_tau0.01_g0.1
+    overrides: {<<: [*tanh_voltage_variant, *tau_0_01], recurrent_gain: 0.1}
+  - name: tanh_voltage_tau0.01_g0.2
+    overrides: {<<: [*tanh_voltage_variant, *tau_0_01], recurrent_gain: 0.2}
+  - name: tanh_voltage_tau0.02_g0.05
+    overrides: {<<: [*tanh_voltage_variant, *tau_0_02], recurrent_gain: 0.05}
+  - name: tanh_voltage_tau0.02_g0.1
+    overrides: {<<: [*tanh_voltage_variant, *tau_0_02], recurrent_gain: 0.1}
+  - name: tanh_voltage_tau0.02_g0.2
+    overrides: {<<: [*tanh_voltage_variant, *tau_0_02], recurrent_gain: 0.2}
+
+  # relu rate
+  - name: relu_rate_tau0.005_g0.05
+    overrides: {<<: [*relu_rate_variant, *tau_0_005], recurrent_gain: 0.05}
+  - name: relu_rate_tau0.005_g0.1
+    overrides: {<<: [*relu_rate_variant, *tau_0_005], recurrent_gain: 0.1}
+  - name: relu_rate_tau0.005_g0.2
+    overrides: {<<: [*relu_rate_variant, *tau_0_005], recurrent_gain: 0.2}
+  - name: relu_rate_tau0.01_g0.05
+    overrides: {<<: [*relu_rate_variant, *tau_0_01], recurrent_gain: 0.05}
+  - name: relu_rate_tau0.01_g0.1
+    overrides: {<<: [*relu_rate_variant, *tau_0_01], recurrent_gain: 0.1}
+  - name: relu_rate_tau0.01_g0.2
+    overrides: {<<: [*relu_rate_variant, *tau_0_01], recurrent_gain: 0.2}
+  - name: relu_rate_tau0.02_g0.05
+    overrides: {<<: [*relu_rate_variant, *tau_0_02], recurrent_gain: 0.05}
+  - name: relu_rate_tau0.02_g0.1
+    overrides: {<<: [*relu_rate_variant, *tau_0_02], recurrent_gain: 0.1}
+  - name: relu_rate_tau0.02_g0.2
+    overrides: {<<: [*relu_rate_variant, *tau_0_02], recurrent_gain: 0.2}
+
+  # relu voltage
+  - name: relu_voltage_tau0.005_g0.05
+    overrides: {<<: [*relu_voltage_variant, *tau_0_005], recurrent_gain: 0.05}
+  - name: relu_voltage_tau0.005_g0.1
+    overrides: {<<: [*relu_voltage_variant, *tau_0_005], recurrent_gain: 0.1}
+  - name: relu_voltage_tau0.005_g0.2
+    overrides: {<<: [*relu_voltage_variant, *tau_0_005], recurrent_gain: 0.2}
+  - name: relu_voltage_tau0.01_g0.05
+    overrides: {<<: [*relu_voltage_variant, *tau_0_01], recurrent_gain: 0.05}
+  - name: relu_voltage_tau0.01_g0.1
+    overrides: {<<: [*relu_voltage_variant, *tau_0_01], recurrent_gain: 0.1}
+  - name: relu_voltage_tau0.01_g0.2
+    overrides: {<<: [*relu_voltage_variant, *tau_0_01], recurrent_gain: 0.2}
+  - name: relu_voltage_tau0.02_g0.05
+    overrides: {<<: [*relu_voltage_variant, *tau_0_02], recurrent_gain: 0.05}
+  - name: relu_voltage_tau0.02_g0.1
+    overrides: {<<: [*relu_voltage_variant, *tau_0_02], recurrent_gain: 0.1}
+  - name: relu_voltage_tau0.02_g0.2
+    overrides: {<<: [*relu_voltage_variant, *tau_0_02], recurrent_gain: 0.2}

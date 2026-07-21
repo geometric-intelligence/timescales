@@ -836,6 +836,116 @@ class TauTrajectoryCallback(L.Callback):
         print(f"Tau trajectory saved to: {path}  (shape={tuple(out['taus'].shape)})")
 
 
+class SpectralTrajectoryCallback(L.Callback):
+    """Track top-k Jacobian eigenvalues throughout training.
+
+    The primary trajectory uses the same discrete-time linearized Jacobian as
+    SpectralSnapshotCallback:
+
+        J = diag(1 - alpha) + diag(alpha) @ (g * W_rec)
+
+    Top-k eigenvalues are rank trajectories sorted independently at each logged
+    step by |lambda_J|. Full eigenspectra are saved too, so mode identity can be
+    revisited post hoc with matching heuristics if needed.
+    """
+
+    def __init__(
+        self,
+        save_dir: str,
+        top_k: int = 2,
+        log_every_n_validation_epochs: int = 1,
+        include_wrec: bool = True,
+    ):
+        super().__init__()
+        self.save_dir = save_dir
+        self.top_k = top_k
+        self.log_every_n_validation_epochs = log_every_n_validation_epochs
+        self.include_wrec = include_wrec
+        self.records: list[dict] = []
+
+    @rank_zero_only
+    def on_fit_start(self, trainer, pl_module):
+        self._record(trainer, pl_module, tag="init")
+
+    @rank_zero_only
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if trainer.sanity_checking:
+            return
+        if trainer.current_epoch % self.log_every_n_validation_epochs != 0:
+            return
+        self._record(trainer, pl_module, tag="validation")
+
+    @rank_zero_only
+    def on_train_end(self, trainer, pl_module):
+        self._record(trainer, pl_module, tag="final")
+
+    def _record(self, trainer, pl_module, tag: str):
+        model = getattr(pl_module, "model", pl_module)
+        rnn_step = getattr(model, "rnn_step", None)
+        if rnn_step is None:
+            print(f"[SpectralTrajectoryCallback] no rnn_step on model; skipping {tag}.")
+            return
+
+        with torch.no_grad():
+            W_rec = rnn_step.W_rec.weight.detach().cpu().numpy().astype(np.float64)
+            alphas = rnn_step.current_alphas.detach().cpu().numpy().astype(np.float64)
+
+        g = float(rnn_step.recurrent_gain)
+        dt = float(model.dt)
+        J = np.diag(1.0 - alphas) + (alphas[:, None] * W_rec) * g
+
+        eigvals_jacobian = np.linalg.eigvals(J)
+        jacobian_order = np.argsort(-np.abs(eigvals_jacobian))
+        top_jacobian = eigvals_jacobian[jacobian_order[: self.top_k]]
+        top_abs = np.abs(top_jacobian)
+        top_log_abs = np.log(np.clip(top_abs, 1e-12, None))
+        top_tau_eff = np.full_like(top_abs, np.nan, dtype=np.float64)
+        stable = top_log_abs < -1e-12
+        top_tau_eff[stable] = -dt / top_log_abs[stable]
+
+        record = {
+            "tag": tag,
+            "step": trainer.global_step,
+            "epoch": trainer.current_epoch,
+            "alphas": alphas,
+            "recurrent_gain": g,
+            "eigvals_jacobian": eigvals_jacobian,
+            "top_jacobian": top_jacobian,
+            "top_jacobian_abs": top_abs,
+            "top_jacobian_tau_eff": top_tau_eff,
+            "top_jacobian_indices": jacobian_order[: self.top_k],
+        }
+
+        if self.include_wrec:
+            eigvals_wrec = np.linalg.eigvals(W_rec)
+            wrec_order = np.argsort(-np.abs(eigvals_wrec))
+            top_wrec = eigvals_wrec[wrec_order[: self.top_k]]
+            record.update(
+                {
+                    "eigvals_wrec": eigvals_wrec,
+                    "top_wrec": top_wrec,
+                    "top_wrec_demo_transform": 1.0 / (1.0 - top_wrec),
+                    "top_wrec_indices": wrec_order[: self.top_k],
+                }
+            )
+
+        self.records.append(record)
+        self._save()
+
+    @rank_zero_only
+    def _save(self):
+        os.makedirs(self.save_dir, exist_ok=True)
+        path = os.path.join(self.save_dir, "spectral_trajectory.pt")
+        torch.save(
+            {
+                "top_k": self.top_k,
+                "ranked_by": "abs(lambda_jacobian)",
+                "records": self.records,
+            },
+            path,
+        )
+
+
 class SpectralSnapshotCallback(L.Callback):
     """Snapshot the linearised Jacobian + Schur/eigen factors at fit start and end.
 

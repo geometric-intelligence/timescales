@@ -1900,85 +1900,191 @@ plt.show()
 
 
 # %% P05c  Eigenvalue spectrum — all gains, untrained + trained overlay
-# Requires: eig_data, gains_plot, df, FIGS_DIR
+# Requires: eig_data, gains_plot, df, FIGS_DIR, bit_colors
 # Colors match notebooks/schur_init_grid/2_coupling_spectra.py
-_C_UNT_P = "#27d3f5"   # untrained eigenvalues (light blue)
-_C_TRN_P = "#f54927"   # trained eigenvalues   (dark orange)
-_C_UC_P  = "#222222"   # unit circle           (near-black)
+# Dominant mode per bit (connectivity coupling |W_out @ V|) highlighted
+# as open-circle rings; conjugate partner always shown alongside.
 
-_g_list_p  = [g for g in gains_plot if g in eig_data]
-_n_g_p     = len(_g_list_p)
-_ncols_p   = min(_n_g_p, 5)
-_nrows_p   = int(np.ceil(_n_g_p / _ncols_p))
-_theta_p   = np.linspace(0, 2 * np.pi, 512)
+_C_UNT_P = "#27d3f5"         # untrained eigenvalues  (light blue)
+_C_TRN_P = "#d95f02"         # trained eigenvalues    (dark orange)
+_C_UC_P  = "#222222"         # unit circle            (near-black)
 
-fig_p, axes_p = plt.subplots(
-    _nrows_p, _ncols_p,
-    figsize=(3.2 * _ncols_p, 3.2 * _nrows_p),
-    squeeze=False,
+_P05c_DROP_LAST_BIT = True   # exclude last bit from coupling highlights
+_P05c_XLIM = (0.6,  1.05)    # default x-range for all panels
+_P05c_YLIM = (-0.225, 0.225) # default y-range for all panels
+
+
+def _p05c_conj_idx(eigs: np.ndarray, idx: int) -> int:
+    """Index of eigenvalue closest to conj(eigs[idx]). Returns idx for real modes."""
+    ev = eigs[idx]
+    if np.abs(ev.imag) < 1e-8:
+        return idx
+    dists      = np.abs(eigs - np.conj(ev))
+    dists[idx] = np.inf
+    return int(np.argmin(dists))
+
+
+def _p05c_dom_modes_connectivity(
+    eigs: np.ndarray, eigvecs: np.ndarray, W_out: np.ndarray, n_bits_use: int
+) -> list[tuple[int, int]]:
+    """Dominant stable mode per bit via connectivity coupling |W_out @ V|.
+
+    Returns list of (bit_idx, mode_idx).
+    """
+    coup   = np.abs(W_out @ eigvecs)          # (n_out, N)
+    stable = np.abs(eigs) < 1.0 - 1e-6       # exclude unit-circle / unstable
+    result = []
+    for bi in range(min(n_bits_use, W_out.shape[0])):
+        c_row = coup[bi].copy()
+        if stable.any():
+            c_row[~stable] = -np.inf
+        result.append((bi, int(np.argmax(c_row))))
+    return result
+
+
+def _p05c_draw_spectrum(axes_grid, g_list, xlim, ylim, fname):
+    """Shared drawing routine for full-view and zoomed panels."""
+    n_g    = len(g_list)
+    ncols  = min(n_g, 5)
+    nrows  = int(np.ceil(n_g / ncols))
+    _th    = np.linspace(0, 2 * np.pi, 512)
+
+    fig, axes = plt.subplots(
+        nrows, ncols,
+        figsize=(3.2 * ncols, 3.2 * nrows),
+        squeeze=False,
+    )
+
+    # Determine bits to highlight (consistent across all gains)
+    _nb_any  = next(eig_data[g]["n_bits"] for g in g_list if g in eig_data)
+    _nb_use  = (_nb_any - 1) if _P05c_DROP_LAST_BIT else _nb_any
+
+    for _pi, g in enumerate(g_list):
+        ax      = axes[_pi // ncols, _pi % ncols]
+        _eigs_g = eig_data[g]["eigs"]
+        _V_g    = eig_data[g]["eigvecs"]
+        _Wo_g   = eig_data[g]["W_out"]
+
+        # ── Untrained eigenvalues ─────────────────────────────────────────
+        _row_p    = df[df["gain"] == g].iloc[0]
+        _unt_ckpt = os.path.join(_row_p["seed_path"], "checkpoints", "untrained.ckpt")
+        if os.path.exists(_unt_ckpt):
+            _sd_u   = torch.load(_unt_ckpt, map_location="cpu", weights_only=False)
+            _Wrec_u = None
+            for _k, _v in _sd_u["state_dict"].items():
+                if "W_rec.weight" in _k:
+                    _Wrec_u = _v.numpy(); break
+            if _Wrec_u is not None:
+                _alpha_u = eig_data[g]["alpha"]
+                _N_u     = _Wrec_u.shape[0]
+                _J_u     = (1.0 - _alpha_u) * np.eye(_N_u) + _alpha_u * g * _Wrec_u
+                _eigs_u  = np.linalg.eig(_J_u)[0]
+                ax.scatter(
+                    _eigs_u.real, _eigs_u.imag,
+                    s=7, c=_C_UNT_P, alpha=0.50, edgecolors="none", zorder=2,
+                    label="untrained" if _pi == 0 else None,
+                )
+
+        # ── Trained eigenvalues ───────────────────────────────────────────
+        ax.scatter(
+            _eigs_g.real, _eigs_g.imag,
+            s=9, c=_C_TRN_P, alpha=0.65, edgecolors="none", zorder=3,
+            label="trained" if _pi == 0 else None,
+        )
+
+        # ── Dominant mode per bit + conjugate — open-circle rings ─────────
+        _dom_pairs = _p05c_dom_modes_connectivity(_eigs_g, _V_g, _Wo_g, _nb_use)
+        _seen_dom  = set()
+        for bi, mode_idx in _dom_pairs:
+            col   = bit_colors[bi]
+            conj  = _p05c_conj_idx(_eigs_g, mode_idx)
+            for _mi in {mode_idx, conj}:
+                if _mi not in _seen_dom:
+                    ax.scatter(
+                        _eigs_g[_mi].real, _eigs_g[_mi].imag,
+                        s=200, facecolors="none", edgecolors=col,
+                        linewidths=2.0, zorder=6,
+                        label=f"bit {bi}" if (_pi == 0 and _mi == mode_idx) else None,
+                    )
+                    _seen_dom.add(_mi)
+
+        # ── Unit circle ───────────────────────────────────────────────────
+        ax.plot(
+            np.cos(_th), np.sin(_th),
+            color=_C_UC_P, ls="--", lw=0.9, alpha=0.70, zorder=1,
+            label="unit circle" if _pi == 0 else None,
+        )
+        ax.axhline(0, color=_C_UC_P, lw=0.30, alpha=0.25, zorder=0)
+        ax.axvline(0, color=_C_UC_P, lw=0.30, alpha=0.25, zorder=0)
+
+        ax.set_xlim(*xlim)
+        ax.set_ylim(*ylim)
+        ax.set_box_aspect(1)
+        ax.set_title(f"g = {g}", fontsize=11, fontweight="bold")
+        ax.set_xlabel("Re(λ)", fontsize=9)
+        if _pi % ncols == 0:
+            ax.set_ylabel("Im(λ)", fontsize=9)
+
+    # Hide unused axes
+    for _pi in range(n_g, nrows * ncols):
+        axes[_pi // ncols, _pi % ncols].set_visible(False)
+
+    # Legend outside the first panel
+    _base_leg = [
+        plt.Line2D([0], [0], marker="o", color="none",
+                   markerfacecolor=_C_UNT_P, markeredgecolor="none",
+                   markersize=7, label="untrained"),
+        plt.Line2D([0], [0], marker="o", color="none",
+                   markerfacecolor=_C_TRN_P, markeredgecolor="none",
+                   markersize=8, label="trained"),
+        plt.Line2D([0], [0], color=_C_UC_P, ls="--", lw=0.9, label="unit circle"),
+    ]
+    _bit_leg = [
+        plt.Line2D([0], [0], marker="o", color="none",
+                   markerfacecolor="none",
+                   markeredgecolor=bit_colors[bi],
+                   markeredgewidth=2.0, markersize=10,
+                   label=f"dom. mode — bit {bi}")
+        for bi in range(_nb_use)
+    ]
+    axes[0, 0].legend(
+        handles=_base_leg + _bit_leg,
+        fontsize=7, loc="upper left",
+        bbox_to_anchor=(1.02, 1.0),
+        framealpha=0.90, borderaxespad=0,
+    )
+
+    fig.suptitle("Jacobian eigenvalue spectrum — all gains",
+                 fontsize=13, fontweight="bold")
+    plt.tight_layout()
+    if SAVE_FIGS:
+        fig.savefig(os.path.join(FIGS_DIR, fname), bbox_inches="tight", dpi=150)
+        print(f"saved → {fname}")
+    plt.show()
+
+
+_p05c_draw_spectrum(
+    axes_grid=axes_3b,
+    g_list=[g for g in gains_plot if g in eig_data],
+    xlim=_P05c_XLIM, ylim=_P05c_YLIM,
+    fname="P05c_spectrum_all_gains.pdf",
 )
 
-for _pi, g in enumerate(_g_list_p):
-    ax = axes_p[_pi // _ncols_p, _pi % _ncols_p]
 
-    # ── Untrained eigenvalues — loaded from untrained.ckpt ─────────────────
-    _row_p    = df[df["gain"] == g].iloc[0]
-    _sp_p     = _row_p["seed_path"]
-    _unt_ckpt = os.path.join(_sp_p, "checkpoints", "untrained.ckpt")
+# %% P05d  Eigenvalue spectrum — zoomed (edit limits below to focus)
+# Same as P05c but with configurable x/y ranges for zooming in.
+# Requires: same as P05c
 
-    if os.path.exists(_unt_ckpt):
-        _sd_u   = torch.load(_unt_ckpt, map_location="cpu", weights_only=False)
-        _Wrec_u = None
-        for _k, _v in _sd_u["state_dict"].items():
-            if "W_rec.weight" in _k:
-                _Wrec_u = _v.numpy(); break
-        if _Wrec_u is not None:
-            _rc_u    = eig_data[g]                    # reuse already-loaded config values
-            _alpha_u = _rc_u["alpha"]
-            _N_u     = _Wrec_u.shape[0]
-            _J_u     = (1.0 - _alpha_u) * np.eye(_N_u) + _alpha_u * g * _Wrec_u
-            _eigs_u  = np.linalg.eig(_J_u)[0]
-            ax.scatter(
-                _eigs_u.real, _eigs_u.imag,
-                s=7, c=_C_UNT_P, alpha=0.50, edgecolors="none", zorder=2,
-                label="untrained" if _pi == 0 else None,
-            )
+_P05d_XLIM = (0.90, 1.02)    # ← edit to zoom
+_P05d_YLIM = (-0.06, 0.06)   # ← edit to zoom
 
-    # ── Trained eigenvalues — already in eig_data ──────────────────────────
-    ax.scatter(
-        eig_data[g]["eigs"].real, eig_data[g]["eigs"].imag,
-        s=9, c=_C_TRN_P, alpha=0.65, edgecolors="none", zorder=3,
-        label="trained" if _pi == 0 else None,
-    )
+_p05c_draw_spectrum(
+    g_list=[g for g in gains_plot if g in eig_data],
+    axes_grid=axes_3b,
+    xlim=_P05d_XLIM, ylim=_P05d_YLIM,
+    fname="P05d_spectrum_all_gains_zoom.pdf",
+)
 
-    # ── Unit circle ────────────────────────────────────────────────────────
-    ax.plot(
-        np.cos(_theta_p), np.sin(_theta_p),
-        color=_C_UC_P, ls="--", lw=0.9, alpha=0.70, zorder=1,
-        label="unit circle" if _pi == 0 else None,
-    )
-    ax.axhline(0, color=_C_UC_P, lw=0.30, alpha=0.25, zorder=0)
-    ax.axvline(0, color=_C_UC_P, lw=0.30, alpha=0.25, zorder=0)
-
-    ax.set_xlim(0.6, 1.05)
-    ax.set_ylim(-0.225, 0.225)
-    ax.set_box_aspect(1)
-    ax.set_title(f"g = {g}", fontsize=11, fontweight="bold")
-    ax.set_xlabel("Re(λ)", fontsize=9)
-    ax.set_ylabel("Im(λ)", fontsize=9)
-
-# Hide any unused axes in the last row
-for _pi in range(_n_g_p, _nrows_p * _ncols_p):
-    axes_p[_pi // _ncols_p, _pi % _ncols_p].set_visible(False)
-
-axes_p[0, 0].legend(fontsize=8, loc="upper left", framealpha=0.85)
-fig_p.suptitle("Jacobian eigenvalue spectrum — all gains",
-               fontsize=13, fontweight="bold")
-plt.tight_layout()
-if SAVE_FIGS:
-    fig_p.savefig(os.path.join(FIGS_DIR, "P05c_spectrum_all_gains.pdf"),
-                  bbox_inches="tight", dpi=150)
-plt.show()
 
 
 # %% P06  Effective timescale scree — G_FOCUS detailed (correlation-highlighted)

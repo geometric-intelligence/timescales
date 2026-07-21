@@ -161,7 +161,7 @@ TAU_CAP  = 200    # cap tau_eff histograms to avoid inf near unit circle
 
 # ---- Colormaps (change to customise all plots) ----------------------------
 CMAP_SEC1 = "plasma"    # Section 1: gain sweep
-CMAP_SEC2 = "viridis"   # Section 2: tau-distribution sweep
+CMAP_SEC2 = "YlOrRd"   # Section 2: tau-distribution sweep
 CMAP_SEC3 = "cividis"   # Section 3: W-distribution sweep
 
 W_gauss = generate_W_gauss(N_GAUSS, rng)
@@ -325,7 +325,13 @@ ts_xmin_tau = all_te_tau.min()
 ts_xmax_tau = TAU_CAP
 
 n_tau    = len(TAU_CONFIGS)
-colors_tau = plt.get_cmap(CMAP_SEC2)(np.linspace(0.15, 0.90, n_tau))
+colors_tau = list(plt.get_cmap(CMAP_SEC2)(np.linspace(0.15, 0.90, n_tau)))
+# Highlight the two conditions of interest with the project colour scheme
+_uniform_idx = next(i for i, c in enumerate(TAU_CONFIGS) if c["dist"] == "uniform")
+_beta1_idx   = next(i for i, c in enumerate(TAU_CONFIGS)
+                    if c.get("beta") == 1.0)
+colors_tau[_uniform_idx] = plt.cm.YlOrRd(0.42)   # amber-orange  (uniform)
+colors_tau[_beta1_idx]   = plt.cm.YlOrRd(0.80)   # deep red-orange (β = 1)
 
 # Layout: 4 rows x n_tau cols
 #   row 0: tau PDF  |  row 1: alpha PDF  |  row 2: J eigenspectrum  |  row 3: tau_eff
@@ -385,9 +391,9 @@ for col, (res, color) in enumerate(zip(results_tau, colors_tau)):
         ax.set_ylabel("Im($\\lambda_J$)", fontsize=8)
     else:
         ax.set_yticklabels([])
-    ax.annotate(f"{res['n_stable']}/{N_GAUSS} stable",
-                xy=(0.03, 0.97), xycoords="axes fraction", va="top", fontsize=7,
-                bbox=dict(boxstyle="round,pad=0.15", fc="white", alpha=0.7))
+    # ax.annotate(f"{res['n_stable']}/{N_GAUSS} stable",
+    #             xy=(0.03, 0.97), xycoords="axes fraction", va="top", fontsize=7,
+    #             bbox=dict(boxstyle="round,pad=0.15", fc="white", alpha=0.7))
 
     # Row 3: tau_eff distribution
     ax = axes_te[col]
