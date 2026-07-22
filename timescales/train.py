@@ -10,6 +10,7 @@ Usage:
 
 import argparse
 import datetime
+import json
 import os
 
 import torch
@@ -35,6 +36,7 @@ from timescales.datamodules import (
     SineWaveDataModule,
 )
 from timescales import run_ids
+from timescales import convergence as convergence_metrics
 
 log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "logs"))
 
@@ -430,6 +432,17 @@ def single_seed(config: dict) -> dict:
     _dump_rng_state(run_dir, tag="final")
     wandb.finish()
 
+    # Steps-to-convergence from the full validation curve LossLoggerCallback wrote.
+    # Every curve-based candidate is computed and stored, so the headline metric
+    # can be chosen at aggregation time without rerunning (config.convergence_metric
+    # selects the headline; None defers the choice).
+    convergence = None
+    curve_path = os.path.join(run_dir, "training_losses.json")
+    if not skip_training and os.path.exists(curve_path):
+        with open(curve_path) as f:
+            curve = json.load(f)
+        convergence = convergence_metrics.compute_convergence(curve, config)
+
     result = {
         "final_val_loss": final_val_loss,
         "run_id": run_id,
@@ -438,6 +451,8 @@ def single_seed(config: dict) -> dict:
         "started_at": started_at,
         "completed_at": datetime.datetime.now().strftime("%Y%m%d_%H%M%S"),
         "skipped": False,
+        "convergence": convergence,
+        "steps_to_convergence": (convergence or {}).get("steps_to_convergence"),
     }
     _write_completion_marker(run_dir, result)
     return result

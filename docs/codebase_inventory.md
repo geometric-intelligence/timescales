@@ -147,9 +147,13 @@ aggressively to strip the path-integration branches from `train.py`/`callbacks.p
   *Still missing:* single `scheme: standard|power_law` knob (today expressed as raw
   `time_constants_config` + `wrec_init` combos).
 - **A — Sine-wave parity.** *Exists:* `SineWaveDataModule`, hetero configs/sweeps, notebooks; init
-  & spectral callbacks are already task-agnostic. *Missing:* pluggable `convergence_metric` (only
-  flip-flop `val_accuracy` exists; sine-wave has no steps-to-threshold in core — it's ad-hoc in
-  `notebooks/*/steps_to_threshold.py`); explicit logging of task timescales `T_i = 2π/ω_i`; smoke config.
+  & spectral callbacks are already task-agnostic.
+  ✅ **Done (2026-07-22):** pluggable `convergence_metric` (`timescales/convergence.py`) — computes
+  every curve-based candidate (`frac_of_final`, `mse_threshold`; `phase_amp_tol` is a stub needing
+  signal-level eval) from the always-logged validation curve, stored under
+  `result["convergence"]["by_method"]`; headline deferred via `convergence_metric` config field
+  (default unset). Tested (`tests/test_convergence.py`) + sine-wave end-to-end smoke.
+  *Still missing:* explicit logging of task timescales `T_i = 2π/ω_i`; a committed smoke config (A4).
 - **B — Fair-comparison sweep.** *Exists:* Cartesian `grid`. *Missing:* best-LR-per-condition
   selection (`lr_selection_rule`); β-robustness / min-over-β with `beta_active_min`; resume.
 - **C — Metrics/logging schema.** *Exists:* `SpectralSnapshotCallback` (init/end eigenvalues),
