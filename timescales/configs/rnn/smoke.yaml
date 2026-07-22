@@ -1,0 +1,63 @@
+# Smoke base config — tiny network / few steps, for verifying the harness
+# end-to-end (both tasks, both init schemes). NOT a research config.
+# Task and init scheme are set per-experiment by sweep_configs/rnn/smoke.yaml;
+# it carries params for both flip_flop and sine_wave (unused keys are ignored).
+
+project_name: "smoke"
+model_type: "rnn"
+task: "flip_flop"            # overridden per experiment
+seed: 0
+
+accelerator: "cpu"
+devices: 1
+
+# flip_flop params
+n_bits: 2
+p_pulse: 0.1
+pulse_amplitude: 1.0
+# sine_wave params
+n_pairs: 1
+periods: 10.0
+init_hidden_value: 1.0
+random_phase: false
+
+# Trajectory
+num_time_steps: 30
+dt: 0.1
+
+# Model
+hidden_size: 16
+activation: "Tanh"
+
+# Time constants (standard/homogeneous by default; power_law set per experiment)
+learn_time_constants: false
+time_constants_config:
+  type: "discrete"
+  values: [1.0]
+shared_time_constant: false
+normalize_hidden: false
+zero_diag_wrec: false
+recurrent_gain: 0.9
+noise_std: 0.0
+wrec_init: "normal_scaled"
+alpha_parameterization: "exponential"
+dynamics_type: "rate"
+
+# Training (step-based)
+learning_rate: 0.001
+weight_decay: 0.0001
+max_steps: 20
+val_every_n_steps: 10
+lr_step_size: 20
+gamma: 0.5
+batch_size: 8
+num_val_trajectories: 8
+num_workers: 0
+
+# Metrics / logging
+track_tau_trajectory: false
+track_spectral_snapshots: true
+track_gradients: false
+eps_real_axis: 0.1
+conv_final_frac: 0.9
+conv_mse_threshold: 0.1

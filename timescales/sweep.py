@@ -302,16 +302,21 @@ def generate_sweep_summary(
 # Subprocess execution (always spawns run_job.py)
 # ============================================================================
 
-def run_job_subprocess(job: Job, gpu_id: int) -> dict[str, Any]:
-    """Run a single job in a subprocess for complete isolation."""
+def run_job_subprocess(job: Job, gpu_id: int | None) -> dict[str, Any]:
+    """Run a single job in a subprocess for complete isolation.
+
+    ``gpu_id=None`` runs on CPU (used for local smoke sweeps and CI); otherwise the
+    job is pinned to the given GPU via CUDA_VISIBLE_DEVICES.
+    """
     os.makedirs(job.seed_dir, exist_ok=True)
+    use_cpu = gpu_id is None
 
     run_config = copy.deepcopy(job.config)
     run_config["seed"] = job.seed
     run_config["sweep_dir"] = job.sweep_dir
     run_config["experiment_name"] = job.exp_name
-    run_config["devices"] = [0]
-    run_config["accelerator"] = "gpu"
+    run_config["devices"] = 1 if use_cpu else [0]
+    run_config["accelerator"] = "cpu" if use_cpu else "gpu"
 
     config_file = os.path.join(job.seed_dir, "run_config.yaml")
     with open(config_file, "w") as f:
@@ -325,9 +330,10 @@ def run_job_subprocess(job: Job, gpu_id: int) -> dict[str, Any]:
     ]
 
     env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    if not use_cpu:
+        env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
 
-    tag = f"[GPU {gpu_id}] {job.job_id}"
+    tag = f"[{'CPU' if use_cpu else f'GPU {gpu_id}'}] {job.job_id}"
     print(f"{tag} — starting")
 
     start_time = time.time()
@@ -412,7 +418,7 @@ class GPUScheduler:
         if self.n_gpus == 0:
             print("No GPUs specified, running sequentially on CPU")
             for job in jobs:
-                results.append(run_job_subprocess(job, gpu_id=0))
+                results.append(run_job_subprocess(job, gpu_id=None))
             return results
 
         print(f"\nScheduling {len(jobs)} jobs across {self.n_gpus} GPUs: {self.gpu_ids}")
@@ -517,7 +523,7 @@ def run_parameter_sweep(
         generate_sweep_summary(sweep_dir, skipped_results)
         return
 
-    scheduler = GPUScheduler(gpu_ids or [0])
+    scheduler = GPUScheduler(gpu_ids)  # empty list => sequential CPU
     all_results = scheduler.run_jobs_parallel(jobs)
 
     generate_sweep_summary(sweep_dir, skipped_results + all_results)
@@ -527,6 +533,7 @@ def main():
     parser = argparse.ArgumentParser(description="Run parameter sweep (any architecture)")
     parser.add_argument("--sweep", type=str, required=True)
     parser.add_argument("--gpus", type=str, default=None)
+    parser.add_argument("--cpu", action="store_true", help="Run on CPU (no GPUs).")
     parser.add_argument(
         "--no-resume", dest="resume", action="store_false",
         help="Re-run every job even if a completed marker already exists.",
@@ -534,7 +541,9 @@ def main():
     args = parser.parse_args()
 
     gpu_ids = None
-    if args.gpus is not None:
+    if args.cpu:
+        gpu_ids = []
+    elif args.gpus is not None:
         gpu_ids = [int(g.strip()) for g in args.gpus.split(",")]
 
     run_parameter_sweep(args.sweep, gpu_ids=gpu_ids, resume=args.resume)
