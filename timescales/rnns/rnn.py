@@ -552,7 +552,7 @@ class RNNLightning(L.LightningModule):
         weight_decay: float,
         step_size: int,
         gamma: float,
-        task: str = "path_integration",
+        task: str = "flip_flop",
         precondition_gradients: bool = False,
         eps_alpha: float = 1e-2,
         lr_interval: str = "epoch",
@@ -587,9 +587,9 @@ class RNNLightning(L.LightningModule):
         self.init_hidden_value = init_hidden_value
         self.signed_output_threshold = signed_output_threshold
         
-        if task in ("binary_counter", "flip_flop"):
+        if task == "flip_flop":
             self.loss_fn = nn.BCEWithLogitsLoss(reduction='none')
-        elif task in ("teacher_student", "sine_wave", "signed_flip_flop"):
+        elif task in ("sine_wave", "signed_flip_flop"):
             self.loss_fn = nn.MSELoss(reduction='none')
 
         if precondition_gradients:
@@ -598,24 +598,7 @@ class RNNLightning(L.LightningModule):
             print(f"Gradient preconditioning DISABLED")
 
     def _compute_loss(self, outputs: torch.Tensor, targets: torch.Tensor) -> tuple[torch.Tensor, dict[str, torch.Tensor] | None]:
-        if self.task in ("path_integration", "path_integration_1d"):
-            y = targets.reshape(-1, self.model.output_size)
-            yhat = torch.softmax(outputs.reshape(-1, self.model.output_size), dim=-1)
-            loss = -(y * torch.log(yhat + 1e-8)).sum(-1).mean()
-            return loss, None
-        elif self.task in ("binary_counter", "flip_flop"):
-            batch_size, seq_len, n_channels = outputs.shape
-            outputs_flat = outputs.reshape(-1, n_channels)
-            targets_flat = targets.reshape(-1, n_channels)
-            per_sample_loss = self.loss_fn(outputs_flat, targets_flat)
-            per_channel_loss = per_sample_loss.mean(dim=0)
-            total_loss = per_channel_loss.mean()
-            per_channel_dict = {
-                f"channel_{i}": per_channel_loss[i].item()
-                for i in range(n_channels)
-            }
-            return total_loss, per_channel_dict
-        elif self.task in ("teacher_student", "sine_wave", "signed_flip_flop"):
+        if self.task in ("flip_flop", "sine_wave", "signed_flip_flop"):
             batch_size, seq_len, n_channels = outputs.shape
             outputs_flat = outputs.reshape(-1, n_channels)
             targets_flat = targets.reshape(-1, n_channels)
@@ -633,7 +616,7 @@ class RNNLightning(L.LightningModule):
     def _compute_accuracy(
         self, outputs: torch.Tensor, targets: torch.Tensor
     ) -> tuple[torch.Tensor | None, dict[str, float] | None]:
-        if self.task in ("binary_counter", "flip_flop"):
+        if self.task == "flip_flop":
             preds = (torch.sigmoid(outputs) > 0.5).float()
             per_channel_acc = (preds == targets).float().mean(dim=(0, 1))
             overall_acc = per_channel_acc.mean()
@@ -654,12 +637,7 @@ class RNNLightning(L.LightningModule):
                 for i in range(per_channel_acc.shape[0])
             }
             return overall_acc, per_channel_dict
-        elif self.task in ("path_integration", "path_integration_1d"):
-            pred_idx = outputs.reshape(-1, self.model.output_size).argmax(dim=-1)
-            tgt_idx = targets.reshape(-1, self.model.output_size).argmax(dim=-1)
-            acc = (pred_idx == tgt_idx).float().mean()
-            return acc, None
-        elif self.task in ("teacher_student", "sine_wave"):
+        elif self.task == "sine_wave":
             mse = ((outputs - targets) ** 2).mean()
             var = targets.var()
             r_squared = 1.0 - mse / (var + 1e-8)
@@ -674,8 +652,6 @@ class RNNLightning(L.LightningModule):
 
     def _get_init_kwargs(self, inputs, targets):
         """Build init_context / init_hidden kwargs for the forward pass."""
-        if self.task in ("path_integration", "path_integration_1d"):
-            return {"init_context": targets[:, 0, :]}
         if self.init_hidden_value is not None:
             batch_size = inputs.shape[0]
             init_h = torch.full(
