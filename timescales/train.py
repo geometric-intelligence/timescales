@@ -11,7 +11,6 @@ Usage:
 import argparse
 import datetime
 import os
-import sys
 
 import torch
 import torch.nn as nn
@@ -35,6 +34,7 @@ from timescales.datamodules import (
     NullDataModule,
     SineWaveDataModule,
 )
+from timescales import run_ids
 
 log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "logs"))
 
@@ -57,6 +57,14 @@ def _dump_rng_state(run_dir: str, tag: str) -> None:
     path = os.path.join(run_dir, f"rng_state_{tag}.pt")
     torch.save(_capture_rng_state(), path)
     print(f"RNG state ({tag}) saved to: {path}")
+
+
+@rank_zero_only
+def _write_completion_marker(run_dir: str, result: dict) -> None:
+    """Write the completion marker that makes reruns skippable/resumable."""
+    os.makedirs(run_dir, exist_ok=True)
+    with open(run_ids.marker_path(run_dir), "w") as f:
+        yaml.dump(result, f, default_flow_style=False)
 
 
 # ============================================================================
@@ -191,8 +199,6 @@ MODEL_FACTORIES = {
 
 def _build_callbacks(config: dict, run_dir: str, datamodule=None):
     """Build the list of Lightning callbacks based on config."""
-    task = config.get("task", "flip_flop")
-
     checkpoint_callback = ModelCheckpoint(
         dirpath=os.path.join(run_dir, "checkpoints"),
         filename="best-model-{epoch:02d}-{val_loss:.3f}",
@@ -249,7 +255,13 @@ def single_seed(config: dict) -> dict:
 
     model_type = config["model_type"]
     seed = config["seed"]
-    run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Deterministic identity: same (config, seed) -> same run_id and output dir,
+    # so reruns are idempotent and sweeps resumable. started_at is kept only for
+    # human-readable logging/wandb, not for the directory layout.
+    fingerprint = run_ids.config_fingerprint(config)
+    run_id = run_ids.run_id_for(config, seed)
+    started_at = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
     print(f"[train] model_type={model_type}, seed={seed}, run_id={run_id}")
 
@@ -283,6 +295,18 @@ def single_seed(config: dict) -> dict:
 
     checkpoints_dir = os.path.join(run_dir, "checkpoints")
 
+    # Idempotent rerun: if this exact run already finished, skip it (unless forced).
+    if run_ids.is_complete(run_dir, fingerprint) and not config.get("force_rerun", False):
+        print(f"  [skip] run already complete: {run_dir}")
+        marker = run_ids.load_marker(run_dir) or {}
+        return {
+            "final_val_loss": marker.get("final_val_loss"),
+            "run_id": run_id,
+            "fingerprint": fingerprint,
+            "seed": seed,
+            "skipped": True,
+        }
+
     wandb_logger = WandbLogger(
         project=config["project_name"],
         name=wandb_name,
@@ -295,7 +319,6 @@ def single_seed(config: dict) -> dict:
     )
 
     # Data
-    task = config.get("task", "flip_flop")
     datamodule = create_datamodule(config)
     datamodule.prepare_data()
     datamodule.setup()
@@ -406,7 +429,18 @@ def single_seed(config: dict) -> dict:
     save_artifacts()
     _dump_rng_state(run_dir, tag="final")
     wandb.finish()
-    return {"final_val_loss": final_val_loss}
+
+    result = {
+        "final_val_loss": final_val_loss,
+        "run_id": run_id,
+        "fingerprint": fingerprint,
+        "seed": seed,
+        "started_at": started_at,
+        "completed_at": datetime.datetime.now().strftime("%Y%m%d_%H%M%S"),
+        "skipped": False,
+    }
+    _write_completion_marker(run_dir, result)
+    return result
 
 
 # ============================================================================

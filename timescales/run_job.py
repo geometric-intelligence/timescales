@@ -26,18 +26,10 @@ def main():
         config = yaml.safe_load(f)
 
     try:
-        result = single_seed(config)
-
-        seed_dir = os.path.join(
-            config["sweep_dir"],
-            config["experiment_name"],
-            f"seed_{config['seed']}",
-        )
-        result_file = os.path.join(seed_dir, "job_result.yaml")
-        with open(result_file, "w") as f:
-            yaml.dump(result, f, default_flow_style=False)
-
-        print(f"Job completed. Result saved to {result_file}")
+        # single_seed() writes the completion marker (job_result.yaml) itself,
+        # so it is the single source of truth for resume — no duplicate write here.
+        single_seed(config)
+        print("Job completed.")
         sys.exit(0)
 
     except Exception as e:

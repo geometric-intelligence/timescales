@@ -139,10 +139,13 @@ aggressively to strip the path-integration branches from `train.py`/`callbacks.p
 ## 3. Gap list — per workstream (exists vs. must build)
 
 - **Harness / config (Target arch, B-scaffolding).** *Exists:* base-config + override sweep,
-  GPU pool, seed axis, per-run config/artifact dump, RNG-state capture. *Missing:* deterministic
-  `run_id`/output path from `(config, seed)` hash (currently a wall-clock timestamp →
-  **not idempotent, not resumable**); resume/skip-completed; single `scheme: standard|power_law`
-  knob (today expressed as raw `time_constants_config` + `wrec_init` combos).
+  GPU pool, seed axis, per-run config/artifact dump, RNG-state capture.
+  ✅ **Done (2026-07-22):** deterministic `run_id` = `config_fingerprint(config)_seed<seed>`
+  (`timescales/run_ids.py`); deterministic single-run + sweep output dirs; idempotent reruns and
+  resumable sweeps via a fingerprinted completion marker (`job_result.yaml`); `sweep.py --no-resume`
+  to force. Covered by `tests/test_run_ids.py` + an offline CPU end-to-end smoke.
+  *Still missing:* single `scheme: standard|power_law` knob (today expressed as raw
+  `time_constants_config` + `wrec_init` combos).
 - **A — Sine-wave parity.** *Exists:* `SineWaveDataModule`, hetero configs/sweeps, notebooks; init
   & spectral callbacks are already task-agnostic. *Missing:* pluggable `convergence_metric` (only
   flip-flop `val_accuracy` exists; sine-wave has no steps-to-threshold in core — it's ad-hoc in

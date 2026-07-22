@@ -21,6 +21,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Any
 import numpy as np
 
+from timescales import run_ids
+
 
 # ============================================================================
 # Configuration loading and generation
@@ -440,7 +442,23 @@ class GPUScheduler:
 # Sweep entry point
 # ============================================================================
 
-def run_parameter_sweep(sweep_file: str, gpu_ids: list[int] | None = None):
+def _skipped_result(job: Job, marker: dict) -> dict[str, Any]:
+    """Build a summary-shaped result for a run skipped via its completion marker."""
+    return {
+        "experiment_name": job.exp_name,
+        "seed": job.seed,
+        "status": "completed",
+        "seed_dir": job.seed_dir,
+        "final_val_loss": marker.get("final_val_loss"),
+        "runtime_seconds": 0,
+        "runtime_str": "resumed",
+        "completed_at": marker.get("completed_at"),
+    }
+
+
+def run_parameter_sweep(
+    sweep_file: str, gpu_ids: list[int] | None = None, resume: bool = True
+):
     print(f"Loading sweep: {sweep_file}")
 
     sweep_config = load_sweep_config(sweep_file)
@@ -456,12 +474,13 @@ def run_parameter_sweep(sweep_file: str, gpu_ids: list[int] | None = None):
     print(f"  Seeds: {n_seeds}  |  Total runs: {len(experiment_configs) * n_seeds}")
     print(f"  GPUs: {gpu_ids}")
 
+    # Deterministic sweep dir (no timestamp) so re-invoking the same sweep reuses
+    # the same tree and can skip runs that already finished.
     log_dir_local = os.path.abspath(os.path.join(os.path.dirname(__file__), "logs"))
     sweep_name = os.path.splitext(os.path.basename(sweep_file))[0]
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    sweep_dir = os.path.join(log_dir_local, "experiments", f"{sweep_name}_{timestamp}")
+    sweep_dir = os.path.join(log_dir_local, "experiments", sweep_name)
     os.makedirs(sweep_dir, exist_ok=True)
-    print(f"  Sweep dir: {sweep_dir}")
+    print(f"  Sweep dir: {sweep_dir}  (resume={resume})")
 
     save_sweep_metadata(sweep_dir, sweep_config, experiment_configs)
 
@@ -470,23 +489,55 @@ def run_parameter_sweep(sweep_file: str, gpu_ids: list[int] | None = None):
     jobs = create_jobs(experiment_configs, seeds, sweep_dir,
                        seeds_outermost=seeds_outermost)
 
+    # Resume: partition into already-complete (skip, but keep for the summary) and
+    # pending. A run counts as complete only if its marker's fingerprint matches
+    # the job about to run, so a changed config forces a fresh run.
+    skipped_results: list[dict[str, Any]] = []
+    if resume:
+        pending = []
+        for job in jobs:
+            fp = run_ids.config_fingerprint(job.config)
+            marker = run_ids.load_marker(job.seed_dir) if run_ids.is_complete(
+                job.seed_dir, fp
+            ) else None
+            if marker is not None:
+                skipped_results.append(_skipped_result(job, marker))
+            else:
+                pending.append(job)
+        jobs = pending
+        if skipped_results:
+            print(f"  Resume: {len(skipped_results)} already complete, "
+                  f"{len(jobs)} to run.")
+    else:
+        for job in jobs:
+            job.config["force_rerun"] = True  # override single_seed's own skip guard
+
+    if not jobs:
+        print("  Nothing to run — all runs already complete.")
+        generate_sweep_summary(sweep_dir, skipped_results)
+        return
+
     scheduler = GPUScheduler(gpu_ids or [0])
     all_results = scheduler.run_jobs_parallel(jobs)
 
-    generate_sweep_summary(sweep_dir, all_results)
+    generate_sweep_summary(sweep_dir, skipped_results + all_results)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Run parameter sweep (any architecture)")
     parser.add_argument("--sweep", type=str, required=True)
     parser.add_argument("--gpus", type=str, default=None)
+    parser.add_argument(
+        "--no-resume", dest="resume", action="store_false",
+        help="Re-run every job even if a completed marker already exists.",
+    )
     args = parser.parse_args()
 
     gpu_ids = None
     if args.gpus is not None:
         gpu_ids = [int(g.strip()) for g in args.gpus.split(",")]
 
-    run_parameter_sweep(args.sweep, gpu_ids=gpu_ids)
+    run_parameter_sweep(args.sweep, gpu_ids=gpu_ids, resume=args.resume)
 
 
 if __name__ == "__main__":
