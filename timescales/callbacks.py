@@ -542,9 +542,10 @@ class SpectralSnapshotCallback(L.Callback):
         forward sweep on val data.
     """
 
-    def __init__(self, save_dir: str):
+    def __init__(self, save_dir: str, eps_real_axis: float = 0.1):
         super().__init__()
         self.save_dir = save_dir
+        self.eps_real_axis = eps_real_axis
 
     @rank_zero_only
     def on_fit_start(self, trainer, pl_module):
@@ -634,3 +635,13 @@ class SpectralSnapshotCallback(L.Callback):
         path = os.path.join(self.save_dir, f"spectral_{tag}.pt")
         torch.save(blob, path)
         print(f"Spectral snapshot ({tag}) saved to: {path}")
+
+        # Lightweight JSON sidecar of named pinching statistics, so aggregation
+        # can read them without opening the .pt blob (spec Workstream C2).
+        from timescales.spectral_stats import spectral_pinching_stats
+
+        stats = spectral_pinching_stats(eigvals_eig, eps_real_axis=self.eps_real_axis)
+        stats_path = os.path.join(self.save_dir, f"spectral_stats_{tag}.json")
+        with open(stats_path, "w") as f:
+            json.dump(stats, f, indent=2)
+        print(f"Spectral stats ({tag}) saved to: {stats_path}")

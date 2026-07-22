@@ -37,6 +37,7 @@ from timescales.datamodules import (
 )
 from timescales import run_ids
 from timescales import convergence as convergence_metrics
+from timescales import provenance
 
 log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "logs"))
 
@@ -216,7 +217,10 @@ def _build_callbacks(config: dict, run_dir: str, datamodule=None):
         callbacks.append(TauTrajectoryCallback(save_dir=run_dir))
 
     if config.get("track_spectral_snapshots", True) and config.get("model_type") == "rnn":
-        callbacks.append(SpectralSnapshotCallback(save_dir=run_dir))
+        callbacks.append(SpectralSnapshotCallback(
+            save_dir=run_dir,
+            eps_real_axis=config.get("eps_real_axis", 0.1),
+        ))
 
     if config.get("track_spectral_trajectory", False) and config.get("model_type") == "rnn":
         callbacks.append(SpectralTrajectoryCallback(
@@ -453,6 +457,7 @@ def single_seed(config: dict) -> dict:
         "skipped": False,
         "convergence": convergence,
         "steps_to_convergence": (convergence or {}).get("steps_to_convergence"),
+        "provenance": provenance.collect_provenance(),
     }
     _write_completion_marker(run_dir, result)
     return result

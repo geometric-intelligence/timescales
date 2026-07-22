@@ -55,6 +55,9 @@ batch_size: 200
 num_val_trajectories: 2000
 num_workers: 4
 
+# Spectral-pinching stats (computed at init + end from the Jacobian eigenvalues).
+eps_real_axis: 0.1               # |Im(lambda)| < this counts as "near the real axis"
+
 # Logging
 viz_log_every_n_steps: 500
 grad_log_every_n_steps: 100

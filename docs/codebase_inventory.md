@@ -157,9 +157,19 @@ aggressively to strip the path-integration branches from `train.py`/`callbacks.p
 - **B — Fair-comparison sweep.** *Exists:* Cartesian `grid`. *Missing:* best-LR-per-condition
   selection (`lr_selection_rule`); β-robustness / min-over-β with `beta_active_min`; resume.
 - **C — Metrics/logging schema.** *Exists:* `SpectralSnapshotCallback` (init/end eigenvalues),
-  `SpectralTrajectoryCallback`, per-run yaml. *Missing:* columnar per-run table (parquet); named
-  pinching stats (`frac_near_real_axis`, `gap_to_unit_circle`, `decay_timescale_range`,
-  `eps_real_axis`); git-commit/lib-version provenance.
+  `SpectralTrajectoryCallback`, per-run yaml.
+  ✅ **Done (2026-07-22):** named pinching stats (`timescales/spectral_stats.py`:
+  `frac_near_real_axis`, `max_abs_lambda`, `gap_to_unit_circle`, `decay_timescale_*`,
+  `osc_period_*`) written as a JSON sidecar per snapshot (`spectral_stats_{init,final}.json`), with
+  `eps_real_axis` a config field; git-commit/dirty + lib-version provenance
+  (`timescales/provenance.py`) folded into every completion marker; per-run columnar table
+  (`timescales/run_table.py` — one flat row per run: config + metrics + convergence-by-method +
+  pinching stats + artifact handles), Parquet with a CSV fallback. Tested
+  (`tests/test_spectral_stats.py`, `tests/test_run_table.py`) + a real-run smoke.
+  **⚠ Dependency gap:** `pandas` is in `pyproject` but **not installed** in the poetry env, and
+  `pyarrow` is **not in the lock** — so Parquet output currently falls back to CSV. Needs a
+  `poetry add pyarrow` + `poetry install` before Parquet works (curves/spectra stay as separate files
+  regardless).
 - **D — Aggregation & stats.** *Missing entirely* in core (ad-hoc in notebooks): cross-seed CI
   curves, Mann–Whitney U + Cliff's delta, the fair-comparison report function.
 - **E — Plotting.** *Exists:* per-study notebook plotting (loss/acc curves, spectra, steps-to-threshold).
