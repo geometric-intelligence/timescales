@@ -1,10 +1,8 @@
 """
-Unified training entry point for all RNN architectures.
+Unified training entry point for the RNN model.
 
-Dispatches to the correct model factory based on model_type in config:
-  - "rnn"     : standard RNN with per-unit time constants
-  - "coupled" : two coupled populations (nonlinear r + linear s)
-  - "schur"   : Schur-decomposed recurrent weights
+The RNN has per-unit time constants; model_type in config selects the factory
+("rnn"), leaving room to register additional architectures later.
 
 Usage:
     python train.py --config configs/rnn/flip_flop.yaml
@@ -12,8 +10,8 @@ Usage:
 
 import argparse
 import datetime
+import json
 import os
-import sys
 
 import torch
 import torch.nn as nn
@@ -26,24 +24,21 @@ from lightning.pytorch.utilities.rank_zero import rank_zero_only
 
 from callbacks import (
     LossLoggerCallback,
-    PositionDecodingCallback,
-    TrajectoryVisualizationCallback,
     GradientStatisticsCallback,
     TauTrajectoryCallback,
     SpectralSnapshotCallback,
     SpectralTrajectoryCallback,
 )
-from timescales.analysis.measurements import PositionDecodingMeasurement
 from timescales.datamodules import (
-    PathIntegrationDataModule,
-    PathIntegration1DDataModule,
-    HierarchicalCounterDataModule,
     FlipFlopDataModule,
     SignedFlipFlopDataModule,
     NullDataModule,
-    TeacherStudentDataModule,
     SineWaveDataModule,
 )
+from timescales import run_ids
+from timescales import convergence as convergence_metrics
+from timescales import provenance
+from timescales.presets import resolve_presets
 
 log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "logs"))
 
@@ -68,6 +63,14 @@ def _dump_rng_state(run_dir: str, tag: str) -> None:
     print(f"RNG state ({tag}) saved to: {path}")
 
 
+@rank_zero_only
+def _write_completion_marker(run_dir: str, result: dict) -> None:
+    """Write the completion marker that makes reruns skippable/resumable."""
+    os.makedirs(run_dir, exist_ok=True)
+    with open(run_ids.marker_path(run_dir), "w") as f:
+        yaml.dump(result, f, default_flow_style=False)
+
+
 # ============================================================================
 # Datamodule factory (shared across all architectures)
 # ============================================================================
@@ -76,74 +79,7 @@ def create_datamodule(config: dict):
     """Create datamodule based on task type in config."""
     task = config.get("task", "flip_flop")
 
-    if task == "path_integration":
-        datamodule = PathIntegrationDataModule(
-            trajectory_type=config["trajectory_type"],
-            velocity_representation=config["velocity_representation"],
-            dt=config["dt"],
-            num_time_steps=config["num_time_steps"],
-            arena_size=config["arena_size"],
-            num_place_cells=config["num_place_cells"],
-            place_cell_rf=config["place_cell_rf"],
-            DoG=config["DoG"],
-            surround_scale=config["surround_scale"],
-            place_cell_layout=config["place_cell_layout"],
-            linear_speed_mean=config.get("linear_speed_mean"),
-            linear_speed_std=config.get("linear_speed_std"),
-            behavioral_timescale_mean=config.get("behavioral_timescale_mean"),
-            behavioral_timescale_std=config.get("behavioral_timescale_std"),
-            linear_speed_tau=config.get("linear_speed_tau", 1.0),
-            angular_speed_mean=config.get("angular_speed_mean", 0.0),
-            angular_speed_std=config.get("angular_speed_std", 1.0),
-            angular_speed_tau=config.get("angular_speed_tau", 0.4),
-            num_trajectories=config["num_trajectories"],
-            batch_size=config["batch_size"],
-            num_workers=config["num_workers"],
-            train_val_split=config["train_val_split"],
-        )
-        config["input_size"] = {"cartesian": 2, "polar": 2, "sincos_polar": 3}[
-            config["velocity_representation"]
-        ]
-        config["output_size"] = config["num_place_cells"]
-
-    elif task == "path_integration_1d":
-        datamodule = PathIntegration1DDataModule(
-            dt=config["dt"],
-            num_time_steps=config["num_time_steps"],
-            arena_size=config["arena_size"],
-            num_place_cells=config["num_place_cells"],
-            place_cell_rf=config["place_cell_rf"],
-            DoG=config.get("DoG", False),
-            surround_scale=config.get("surround_scale", 2.0),
-            place_cell_layout=config.get("place_cell_layout", "uniform"),
-            velocity_mean=config.get("velocity_mean", 0.0),
-            velocity_std=config.get("velocity_std", 0.5),
-            velocity_tau=config.get("velocity_tau", 1.0),
-            num_trajectories=config["num_trajectories"],
-            batch_size=config["batch_size"],
-            num_workers=config["num_workers"],
-            train_val_split=config["train_val_split"],
-        )
-        config["input_size"] = 1
-        config["output_size"] = config["num_place_cells"]
-
-    elif task == "binary_counter":
-        datamodule = HierarchicalCounterDataModule(
-            n_levels=config["n_levels"],
-            base_flip_prob=config["base_flip_prob"],
-            noise_std=config.get("noise_std", 0.1),
-            num_time_steps=config["num_time_steps"],
-            num_trajectories=config["num_trajectories"],
-            batch_size=config["batch_size"],
-            num_workers=config["num_workers"],
-            train_val_split=config["train_val_split"],
-            observe_all_levels=config.get("observe_all_levels", False),
-            input_encoding=config.get("input_encoding", "noisy_binary"),
-        )
-        config["input_size"] = datamodule.input_size
-        config["output_size"] = datamodule.output_size
-
-    elif task == "flip_flop":
+    if task == "flip_flop":
         datamodule = FlipFlopDataModule(
             n_bits=config["n_bits"],
             p_pulse=config["p_pulse"],
@@ -163,28 +99,6 @@ def create_datamodule(config: dict):
             pulse_amplitude=config.get("pulse_amplitude", 1.0),
             num_time_steps=config["num_time_steps"],
             num_val_trajectories=config.get("num_val_trajectories", 100),
-            batch_size=config["batch_size"],
-            num_workers=config["num_workers"],
-        )
-        config["input_size"] = datamodule.input_size
-        config["output_size"] = datamodule.output_size
-
-    elif task == "teacher_student":
-        datamodule = TeacherStudentDataModule(
-            teacher_hidden_size=config["teacher_hidden_size"],
-            teacher_recurrent_gain=config["teacher_recurrent_gain"],
-            teacher_timescale=config["teacher_timescale"],
-            teacher_activation=config.get("teacher_activation", "Tanh"),
-            teacher_wrec_init=config.get("teacher_wrec_init", "normal_scaled"),
-            teacher_seed=config.get("teacher_seed", 42),
-            input_dim=config.get("input_dim", 2),
-            output_dim=config.get("output_dim", 2),
-            num_time_steps=config["num_time_steps"],
-            dt=config["dt"],
-            num_sequences=config.get("num_sequences", 500),
-            train_val_split=config.get("train_val_split", 0.8),
-            savgol_window=config.get("savgol_window", 5),
-            savgol_polyorder=config.get("savgol_polyorder", 2),
             batch_size=config["batch_size"],
             num_workers=config["num_workers"],
         )
@@ -267,7 +181,7 @@ def _create_rnn_model(config: dict):
         weight_decay=config["weight_decay"],
         step_size=lr_step_size,
         gamma=config["gamma"],
-        task=config.get("task", "path_integration"),
+        task=config.get("task", "flip_flop"),
         precondition_gradients=config.get("precondition_gradients", False),
         eps_alpha=config.get("eps_alpha", 1e-2),
         lr_interval=lr_interval,
@@ -277,86 +191,9 @@ def _create_rnn_model(config: dict):
     return model, lightning_module
 
 
-def _create_coupled_model(config: dict):
-    from timescales.rnns.coupled_rnn import CoupledRNN, CoupledRNNLightning
-
-    model = CoupledRNN(
-        input_size=config["input_size"],
-        r_hidden_size=config["r_hidden_size"],
-        s_hidden_size=config["s_hidden_size"],
-        output_size=config["output_size"],
-        dt=config["dt"],
-        tau_r=config["tau_r"],
-        tau_s=config["tau_s"],
-        activation=getattr(nn, config.get("activation", "Tanh")),
-        zero_diag_wrec=config.get("zero_diag_wrec", True),
-        recurrent_gain=config.get("recurrent_gain", 1.0),
-        noise_std=config.get("noise_std", 0.0),
-        wrec_init=config.get("wrec_init", "orthogonal"),
-        w_s_gain=config.get("w_s_gain", 1.0),
-        trainable_w_s=config.get("trainable_w_s", False),
-    )
-
-    if "max_steps" in config:
-        lr_step_size = config.get("lr_step_size", 1000)
-        lr_interval = "step"
-    else:
-        lr_step_size = config["step_size"]
-        lr_interval = "epoch"
-
-    lightning_module = CoupledRNNLightning(
-        model=model,
-        learning_rate=config["learning_rate"],
-        weight_decay=config["weight_decay"],
-        step_size=lr_step_size,
-        gamma=config["gamma"],
-        task=config.get("task", "flip_flop"),
-        lr_interval=lr_interval,
-    )
-    return model, lightning_module
-
-
-def _create_schur_model(config: dict):
-    from timescales.rnns.schur_rnn import SchurRNN, SchurRNNLightning
-
-    model = SchurRNN(
-        input_size=config["input_size"],
-        hidden_size=config["hidden_size"],
-        output_size=config["output_size"],
-        dt=config["dt"],
-        tau=config["tau"],
-        recurrent_gain=config.get("recurrent_gain", 1.0),
-        noise_std=config.get("noise_std", 0.0),
-        wrec_init=config.get("wrec_init", "normal_scaled"),
-        train_t=config.get("train_t", True),
-        train_q=config.get("train_q", False),
-        q_parameterization=config.get("q_parameterization", "cayley"),
-    )
-
-    if "max_steps" in config:
-        lr_step_size = config.get("lr_step_size", 1000)
-        lr_interval = "step"
-    else:
-        lr_step_size = config["step_size"]
-        lr_interval = "epoch"
-
-    lightning_module = SchurRNNLightning(
-        model=model,
-        learning_rate=config["learning_rate"],
-        weight_decay=config["weight_decay"],
-        step_size=lr_step_size,
-        gamma=config["gamma"],
-        task=config.get("task", "flip_flop"),
-        lr_interval=lr_interval,
-    )
-    return model, lightning_module
-
-
 MODEL_FACTORIES = {
     "rnn": _create_rnn_model,
     "multitimescale": _create_rnn_model,  # backward compat
-    "coupled": _create_coupled_model,
-    "schur": _create_schur_model,
 }
 
 
@@ -366,8 +203,6 @@ MODEL_FACTORIES = {
 
 def _build_callbacks(config: dict, run_dir: str, datamodule=None):
     """Build the list of Lightning callbacks based on config."""
-    task = config.get("task", "flip_flop")
-
     checkpoint_callback = ModelCheckpoint(
         dirpath=os.path.join(run_dir, "checkpoints"),
         filename="best-model-{epoch:02d}-{val_loss:.3f}",
@@ -383,7 +218,10 @@ def _build_callbacks(config: dict, run_dir: str, datamodule=None):
         callbacks.append(TauTrajectoryCallback(save_dir=run_dir))
 
     if config.get("track_spectral_snapshots", True) and config.get("model_type") == "rnn":
-        callbacks.append(SpectralSnapshotCallback(save_dir=run_dir))
+        callbacks.append(SpectralSnapshotCallback(
+            save_dir=run_dir,
+            eps_real_axis=config.get("eps_real_axis", 0.1),
+        ))
 
     if config.get("track_spectral_trajectory", False) and config.get("model_type") == "rnn":
         callbacks.append(SpectralTrajectoryCallback(
@@ -400,20 +238,6 @@ def _build_callbacks(config: dict, run_dir: str, datamodule=None):
             save_dir=run_dir,
             log_every_n_steps=config.get("grad_log_every_n_steps", 100),
             track_per_weight_matrix=config.get("grad_track_per_weight_matrix", True),
-        ))
-
-    if task == "path_integration" and datamodule is not None:
-        callbacks.append(PositionDecodingCallback(
-            measurement=PositionDecodingMeasurement(),
-            datamodule=datamodule,
-            log_every_n_epochs=config["log_every_n_epochs"],
-            save_dir=run_dir,
-        ))
-        callbacks.append(TrajectoryVisualizationCallback(
-            place_cell_centers=datamodule.place_cell_centers,
-            arena_size=config["arena_size"],
-            log_every_n_epochs=config["viz_log_every_n_epochs"],
-            num_trajectories_to_plot=3,
         ))
 
     checkpoint_every_n = config.get("save_checkpoint_every_n_epochs", None)
@@ -438,7 +262,19 @@ def single_seed(config: dict) -> dict:
 
     model_type = config["model_type"]
     seed = config["seed"]
-    run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Deterministic identity: same (config, seed) -> same run_id and output dir,
+    # so reruns are idempotent and sweeps resumable. started_at is kept only for
+    # human-readable logging/wandb, not for the directory layout.
+    # NOTE: fingerprint the *as-authored* config BEFORE preset resolution, so
+    # sweep-level resume (which fingerprints the authored config) agrees.
+    fingerprint = run_ids.config_fingerprint(config)
+    run_id = run_ids.run_id_for(config, seed)
+    started_at = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Expand high-level presets (trainable / tau_init) into low-level keys; the
+    # resolved config is what gets saved alongside the run.
+    resolve_presets(config)
 
     print(f"[train] model_type={model_type}, seed={seed}, run_id={run_id}")
 
@@ -472,6 +308,18 @@ def single_seed(config: dict) -> dict:
 
     checkpoints_dir = os.path.join(run_dir, "checkpoints")
 
+    # Idempotent rerun: if this exact run already finished, skip it (unless forced).
+    if run_ids.is_complete(run_dir, fingerprint) and not config.get("force_rerun", False):
+        print(f"  [skip] run already complete: {run_dir}")
+        marker = run_ids.load_marker(run_dir) or {}
+        return {
+            "final_val_loss": marker.get("final_val_loss"),
+            "run_id": run_id,
+            "fingerprint": fingerprint,
+            "seed": seed,
+            "skipped": True,
+        }
+
     wandb_logger = WandbLogger(
         project=config["project_name"],
         name=wandb_name,
@@ -484,7 +332,6 @@ def single_seed(config: dict) -> dict:
     )
 
     # Data
-    task = config.get("task", "flip_flop")
     datamodule = create_datamodule(config)
     datamodule.prepare_data()
     datamodule.setup()
@@ -500,7 +347,14 @@ def single_seed(config: dict) -> dict:
         if wrec is not None:
             for p in wrec.parameters():
                 p.requires_grad_(False)
-            print("  freeze_wrec=True — W_rec frozen (only W_in, W_out train)")
+            print("  freeze_wrec=True — W_rec frozen")
+
+    if config.get("freeze_win", False) and hasattr(model, "rnn_step"):
+        win = getattr(model.rnn_step, "W_in", None)
+        if win is not None:
+            for p in win.parameters():
+                p.requires_grad_(False)
+            print("  freeze_win=True — W_in frozen")
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"  Model: {model.__class__.__name__}, trainable params: {n_params}")
@@ -539,7 +393,7 @@ def single_seed(config: dict) -> dict:
     strategy = config.get("strategy", "auto")
     if isinstance(devices, list) and len(devices) == 1:
         strategy = "auto"
-    elif strategy == "auto" and task != "path_integration":
+    elif strategy == "auto":
         strategy = "ddp_find_unused_parameters_true"
 
     if "max_steps" in config:
@@ -590,17 +444,37 @@ def single_seed(config: dict) -> dict:
         )
         with open(os.path.join(run_dir, f"config_seed{seed}.yaml"), "w") as f:
             yaml.dump(config, f)
-        if task == "path_integration":
-            torch.save(
-                datamodule.place_cell_centers,
-                os.path.join(run_dir, f"place_cell_centers_seed{seed}.pt"),
-            )
         print(f"  Artifacts saved: {run_dir}")
 
     save_artifacts()
     _dump_rng_state(run_dir, tag="final")
     wandb.finish()
-    return {"final_val_loss": final_val_loss}
+
+    # Steps-to-convergence from the full validation curve LossLoggerCallback wrote.
+    # Every curve-based candidate is computed and stored, so the headline metric
+    # can be chosen at aggregation time without rerunning (config.convergence_metric
+    # selects the headline; None defers the choice).
+    convergence = None
+    curve_path = os.path.join(run_dir, "training_losses.json")
+    if not skip_training and os.path.exists(curve_path):
+        with open(curve_path) as f:
+            curve = json.load(f)
+        convergence = convergence_metrics.compute_convergence(curve, config)
+
+    result = {
+        "final_val_loss": final_val_loss,
+        "run_id": run_id,
+        "fingerprint": fingerprint,
+        "seed": seed,
+        "started_at": started_at,
+        "completed_at": datetime.datetime.now().strftime("%Y%m%d_%H%M%S"),
+        "skipped": False,
+        "convergence": convergence,
+        "steps_to_convergence": (convergence or {}).get("steps_to_convergence"),
+        "provenance": provenance.collect_provenance(),
+    }
+    _write_completion_marker(run_dir, result)
+    return result
 
 
 # ============================================================================

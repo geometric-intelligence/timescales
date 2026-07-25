@@ -1,0 +1,41 @@
+# Smoke sweep — both tasks x {standard, power_law} init, 2 seeds, on CPU.
+# Verifies the harness end-to-end (acceptance #2-3): deterministic dirs, resume,
+# completion markers, convergence records, spectral-pinching sidecars, run table.
+#
+# Run:  poetry run python sweep.py --sweep sweep_configs/rnn/smoke.yaml --cpu
+# Then: poetry run python -m timescales.run_table \
+#         --sweep-dir logs/experiments/smoke --out logs/experiments/smoke/run_table.csv
+
+base_config: "configs/rnn/smoke.yaml"
+n_seeds: 2
+seeds_outermost: true
+
+# Power-law tau init over a short [1, 20] range (tiny net) with exponent 1.
+_powerlaw_tc: &powerlaw_tc
+  type: "continuous"
+  distribution: "powerlaw"
+  min_time_constant: 1.0
+  max_time_constant: 20.0
+  exponent: 1.0
+
+_standard_tc: &standard_tc
+  type: "discrete"
+  values: [1.0]
+
+experiments:
+  - name: flip_flop_standard
+    overrides:
+      task: "flip_flop"
+      time_constants_config: *standard_tc
+  - name: flip_flop_powerlaw
+    overrides:
+      task: "flip_flop"
+      time_constants_config: *powerlaw_tc
+  - name: sine_wave_standard
+    overrides:
+      task: "sine_wave"
+      time_constants_config: *standard_tc
+  - name: sine_wave_powerlaw
+    overrides:
+      task: "sine_wave"
+      time_constants_config: *powerlaw_tc

@@ -21,6 +21,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Any
 import numpy as np
 
+from timescales import run_ids
+
 
 # ============================================================================
 # Configuration loading and generation
@@ -104,7 +106,79 @@ def _generate_grid_experiments(sweep_config: dict) -> list[tuple[str, dict]]:
     return experiment_configs
 
 
+def _format_value(value) -> str:
+    return f"{value:.3g}" if isinstance(value, float) else str(value)
+
+
+def _generate_variant_experiments(sweep_config: dict) -> list[tuple[str, dict]]:
+    """Cartesian product over named variant axes, optionally crossed with `grid`.
+
+    `variants` maps axis -> {variant_name: overrides_dict}. Each combination
+    deep-merges the base config with one overrides dict per axis (in axis order),
+    then applies scalar `grid` overrides on top. Naming uses `naming.format` with
+    {axis_name} / {grid_param} placeholders, else joins variant names and grid
+    values with underscores.
+    """
+    base_config = sweep_config["_base_config"]
+    variants_spec = sweep_config["variants"]
+    fixed_overrides = sweep_config.get("fixed_overrides", {})
+    naming_config = sweep_config.get("naming", {})
+    base_with_fixed = _deep_merge_dict(base_config, fixed_overrides)
+
+    axis_names = list(variants_spec.keys())
+    axis_options = [list(variants_spec[a].items()) for a in axis_names]
+
+    grid_spec = sweep_config.get("grid", {})
+    grid_names = list(grid_spec.keys())
+    grid_values = [grid_spec[n] for n in grid_names]
+
+    n_total = 1
+    for opts in axis_options:
+        n_total *= len(opts)
+    for vals in grid_values:
+        n_total *= len(vals)
+    print(f"Generating variant sweep: {n_total} experiments "
+          f"({' x '.join(f'{a}:{len(o)}' for a, o in zip(axis_names, axis_options, strict=True))}"
+          f"{' x ' if grid_names else ''}"
+          f"{' x '.join(f'{n}:{len(v)}' for n, v in zip(grid_names, grid_values, strict=True))})")
+
+    experiment_configs = []
+    for variant_combo in itertools.product(*axis_options):
+        for grid_combo in itertools.product(*grid_values):
+            merged = base_with_fixed
+            substitutions: dict[str, str] = {}
+            for axis, (vname, overrides) in zip(axis_names, variant_combo, strict=True):
+                merged = _deep_merge_dict(merged, overrides or {})
+                substitutions[axis] = str(vname)
+
+            grid_overrides: dict = {}
+            for gname, gval in zip(grid_names, grid_combo, strict=True):
+                if "__" in gname:
+                    keys = gname.split("__")
+                    current = grid_overrides
+                    for key in keys[:-1]:
+                        current = current.setdefault(key, {})
+                    current[keys[-1]] = gval
+                else:
+                    grid_overrides[gname] = gval
+                substitutions[gname] = _format_value(gval)
+            merged = _deep_merge_dict(merged, grid_overrides)
+
+            if "format" in naming_config:
+                exp_name = naming_config["format"]
+                for key, val in substitutions.items():
+                    exp_name = exp_name.replace("{" + key + "}", val)
+            else:
+                exp_name = "_".join(substitutions.values())
+
+            experiment_configs.append((exp_name, merged))
+
+    return experiment_configs
+
+
 def generate_experiment_configs(sweep_config: dict) -> list[tuple[str, dict]]:
+    if "variants" in sweep_config:
+        return _generate_variant_experiments(sweep_config)
     if "grid" in sweep_config:
         return _generate_grid_experiments(sweep_config)
 
@@ -300,16 +374,21 @@ def generate_sweep_summary(
 # Subprocess execution (always spawns run_job.py)
 # ============================================================================
 
-def run_job_subprocess(job: Job, gpu_id: int) -> dict[str, Any]:
-    """Run a single job in a subprocess for complete isolation."""
+def run_job_subprocess(job: Job, gpu_id: int | None) -> dict[str, Any]:
+    """Run a single job in a subprocess for complete isolation.
+
+    ``gpu_id=None`` runs on CPU (used for local smoke sweeps and CI); otherwise the
+    job is pinned to the given GPU via CUDA_VISIBLE_DEVICES.
+    """
     os.makedirs(job.seed_dir, exist_ok=True)
+    use_cpu = gpu_id is None
 
     run_config = copy.deepcopy(job.config)
     run_config["seed"] = job.seed
     run_config["sweep_dir"] = job.sweep_dir
     run_config["experiment_name"] = job.exp_name
-    run_config["devices"] = [0]
-    run_config["accelerator"] = "gpu"
+    run_config["devices"] = 1 if use_cpu else [0]
+    run_config["accelerator"] = "cpu" if use_cpu else "gpu"
 
     config_file = os.path.join(job.seed_dir, "run_config.yaml")
     with open(config_file, "w") as f:
@@ -323,9 +402,10 @@ def run_job_subprocess(job: Job, gpu_id: int) -> dict[str, Any]:
     ]
 
     env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    if not use_cpu:
+        env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
 
-    tag = f"[GPU {gpu_id}] {job.job_id}"
+    tag = f"[{'CPU' if use_cpu else f'GPU {gpu_id}'}] {job.job_id}"
     print(f"{tag} — starting")
 
     start_time = time.time()
@@ -410,7 +490,7 @@ class GPUScheduler:
         if self.n_gpus == 0:
             print("No GPUs specified, running sequentially on CPU")
             for job in jobs:
-                results.append(run_job_subprocess(job, gpu_id=0))
+                results.append(run_job_subprocess(job, gpu_id=None))
             return results
 
         print(f"\nScheduling {len(jobs)} jobs across {self.n_gpus} GPUs: {self.gpu_ids}")
@@ -440,7 +520,23 @@ class GPUScheduler:
 # Sweep entry point
 # ============================================================================
 
-def run_parameter_sweep(sweep_file: str, gpu_ids: list[int] | None = None):
+def _skipped_result(job: Job, marker: dict) -> dict[str, Any]:
+    """Build a summary-shaped result for a run skipped via its completion marker."""
+    return {
+        "experiment_name": job.exp_name,
+        "seed": job.seed,
+        "status": "completed",
+        "seed_dir": job.seed_dir,
+        "final_val_loss": marker.get("final_val_loss"),
+        "runtime_seconds": 0,
+        "runtime_str": "resumed",
+        "completed_at": marker.get("completed_at"),
+    }
+
+
+def run_parameter_sweep(
+    sweep_file: str, gpu_ids: list[int] | None = None, resume: bool = True
+):
     print(f"Loading sweep: {sweep_file}")
 
     sweep_config = load_sweep_config(sweep_file)
@@ -456,12 +552,13 @@ def run_parameter_sweep(sweep_file: str, gpu_ids: list[int] | None = None):
     print(f"  Seeds: {n_seeds}  |  Total runs: {len(experiment_configs) * n_seeds}")
     print(f"  GPUs: {gpu_ids}")
 
+    # Deterministic sweep dir (no timestamp) so re-invoking the same sweep reuses
+    # the same tree and can skip runs that already finished.
     log_dir_local = os.path.abspath(os.path.join(os.path.dirname(__file__), "logs"))
     sweep_name = os.path.splitext(os.path.basename(sweep_file))[0]
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    sweep_dir = os.path.join(log_dir_local, "experiments", f"{sweep_name}_{timestamp}")
+    sweep_dir = os.path.join(log_dir_local, "experiments", sweep_name)
     os.makedirs(sweep_dir, exist_ok=True)
-    print(f"  Sweep dir: {sweep_dir}")
+    print(f"  Sweep dir: {sweep_dir}  (resume={resume})")
 
     save_sweep_metadata(sweep_dir, sweep_config, experiment_configs)
 
@@ -470,23 +567,58 @@ def run_parameter_sweep(sweep_file: str, gpu_ids: list[int] | None = None):
     jobs = create_jobs(experiment_configs, seeds, sweep_dir,
                        seeds_outermost=seeds_outermost)
 
-    scheduler = GPUScheduler(gpu_ids or [0])
+    # Resume: partition into already-complete (skip, but keep for the summary) and
+    # pending. A run counts as complete only if its marker's fingerprint matches
+    # the job about to run, so a changed config forces a fresh run.
+    skipped_results: list[dict[str, Any]] = []
+    if resume:
+        pending = []
+        for job in jobs:
+            fp = run_ids.config_fingerprint(job.config)
+            marker = run_ids.load_marker(job.seed_dir) if run_ids.is_complete(
+                job.seed_dir, fp
+            ) else None
+            if marker is not None:
+                skipped_results.append(_skipped_result(job, marker))
+            else:
+                pending.append(job)
+        jobs = pending
+        if skipped_results:
+            print(f"  Resume: {len(skipped_results)} already complete, "
+                  f"{len(jobs)} to run.")
+    else:
+        for job in jobs:
+            job.config["force_rerun"] = True  # override single_seed's own skip guard
+
+    if not jobs:
+        print("  Nothing to run — all runs already complete.")
+        generate_sweep_summary(sweep_dir, skipped_results)
+        return
+
+    scheduler = GPUScheduler(gpu_ids)  # empty list => sequential CPU
     all_results = scheduler.run_jobs_parallel(jobs)
 
-    generate_sweep_summary(sweep_dir, all_results)
+    generate_sweep_summary(sweep_dir, skipped_results + all_results)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Run parameter sweep (any architecture)")
     parser.add_argument("--sweep", type=str, required=True)
     parser.add_argument("--gpus", type=str, default=None)
+    parser.add_argument("--cpu", action="store_true", help="Run on CPU (no GPUs).")
+    parser.add_argument(
+        "--no-resume", dest="resume", action="store_false",
+        help="Re-run every job even if a completed marker already exists.",
+    )
     args = parser.parse_args()
 
     gpu_ids = None
-    if args.gpus is not None:
+    if args.cpu:
+        gpu_ids = []
+    elif args.gpus is not None:
         gpu_ids = [int(g.strip()) for g in args.gpus.split(",")]
 
-    run_parameter_sweep(args.sweep, gpu_ids=gpu_ids)
+    run_parameter_sweep(args.sweep, gpu_ids=gpu_ids, resume=args.resume)
 
 
 if __name__ == "__main__":

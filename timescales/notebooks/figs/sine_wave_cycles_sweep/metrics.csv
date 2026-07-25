@@ -1,7 +1,0 @@
-T_train,n_cycles_slow,seed,seed_path,rho,n_unstable,n_found,n_target,per_pair_found,readout_pr,r2_in,r2_out,diverged,final_val_loss
-100,1.0,0,/home/facosta/timescales/timescales/logs/experiments/sine_wave_hetero_cycles_sweep_20260418_002520/T_100/seed_0,1.0000288235046968,2,6,6,"[2, 2, 2]",1.0,0.9996801407345293,0.8731518785311605,False,0.01182832382619381
-200,2.0,0,/home/facosta/timescales/timescales/logs/experiments/sine_wave_hetero_cycles_sweep_20260418_002520/T_200/seed_0,1.0001096905427753,2,6,6,"[2, 2, 2]",4.995124860275033,0.9996885207227998,0.99269967589147,False,0.01613209769129753
-500,5.0,0,/home/facosta/timescales/timescales/logs/experiments/sine_wave_hetero_cycles_sweep_20260418_002520/T_500/seed_0,1.0000162725730364,2,2,6,"[0, 2, 0]",2.9994128534897047,0.3532072800917936,0.3326020586779206,False,0.33619222044944763
-1000,10.0,0,/home/facosta/timescales/timescales/logs/experiments/sine_wave_hetero_cycles_sweep_20260418_002520/T_1000/seed_0,0.999983056737868,0,2,6,"[0, 0, 2]",11.985208127207152,0.33617024103831106,0.333182327795818,False,0.3507315516471863
-2000,20.0,0,/home/facosta/timescales/timescales/logs/experiments/sine_wave_hetero_cycles_sweep_20260418_002520/T_2000/seed_0,0.9570984846289884,0,2,6,"[2, 0, 0]",2.9991901846783477,0.011677778614729073,-0.0004692171028906067,False,0.5113817453384399
-4000,40.0,0,/home/facosta/timescales/timescales/logs/experiments/sine_wave_hetero_cycles_sweep_20260418_002520/T_4000/seed_0,0.9485390744705511,0,0,6,"[0, 0, 0]",1.0,0.005189195529790913,-0.00022804296508538435,False,6.0362854817055e+21

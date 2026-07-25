@@ -52,6 +52,18 @@ batch_size: 64
 num_val_trajectories: 200
 num_workers: 4
 
+# Convergence metric (steps-to-convergence from the validation curve).
+# The full curve is always logged, and every curve-based candidate is computed and
+# stored under result["convergence"]["by_method"], so the headline can be chosen at
+# aggregation time. Set convergence_metric to pick a headline now; leave it unset
+# (default) to defer. Candidates: frac_of_final | mse_threshold | phase_amp_tol.
+# convergence_metric: frac_of_final
+conv_final_frac: 0.9              # frac_of_final: fraction of the run's own final R^2
+conv_mse_threshold: 0.1          # mse_threshold: converged when (1 - R^2) <= this
+
+# Spectral-pinching stats (computed at init + end from the Jacobian eigenvalues).
+eps_real_axis: 0.1               # |Im(lambda)| < this counts as "near the real axis"
+
 # Logging
 viz_log_every_n_steps: 500
 grad_log_every_n_steps: 100
