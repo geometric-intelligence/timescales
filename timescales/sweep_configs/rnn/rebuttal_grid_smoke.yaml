@@ -34,9 +34,6 @@ variants:
       tau_init:
         scheme: powerlaw
         exponent: 1.0
-    lognormal:
-      tau_init:
-        scheme: lognormal
 
   trainable:
     full:
