@@ -1,5 +1,25 @@
 # Codebase Inventory & Cleanup Plan
 
+> **Post-review status (2026-07-22, delta spec applied):**
+> - ✅ §0: Appendix-F grid = `schur_init_grid_g05/g09` sweeps; subsumed by `rebuttal_grid.yaml`
+>   (re-run deterministically with more seeds/axes). No legacy-data loader built.
+> - ✅ §3: `trainable` presets full/fixedA/reservoir (`presets.py`); freeze semantics verified
+>   tensor-by-tensor.
+> - ✅ §4: log-normal τ init implemented (`presets.py`, `rnn.py`) — **dropped from the grid by
+>   researcher decision**; capability retained.
+> - ✅ §5: matching & coupling module (`mode_analysis.py`): nearest-mode log-ratio matching error,
+>   conjugate-pair coupling, participation ratio, dominance ratio, assignment uniqueness,
+>   shuffled-readout control. Post-hoc over saved spectral blobs; `mode_table_{tag}.csv`.
+> - ✅ §7: generic rank-based stats (`stats.py`: Mann-Whitney U, Cliff's delta, Cohen's d secondary).
+> - ✅ §1: best-vs-best over g (`reports.py`): per-(task, trainable) head-to-head of each scheme's
+>   best-g condition, for final loss AND steps-to-convergence, + per-g medians table.
+> - ✅ §2: LR fixed at 1e-3; two-stage selector never built (v2/B2 dropped).
+> - **Launch:** `rebuttal_grid.yaml` = 60 conditions × 20 seeds = 1200 runs
+>   (task{ff,sine} × init{uniform,powerlaw} × trainable{full,fixedA,reservoir} × g{0.3,0.5,0.7,0.9,0.95}).
+> - ⏳ §6: trajectory/τ-dist logging for example runs (partially exists via TauTrajectoryCallback).
+> - Open design decisions (delta §10): coupling sparsity/one-to-one indices confirmed as defaults
+>   (PR + dominance ratio); matching = nearest-mode log-ratio.
+
 **Status:** Step 0 of `codebase_prep_prerebuttal_v2.md`. Capability report + keep/remove
 recommendation + gap list.
 
