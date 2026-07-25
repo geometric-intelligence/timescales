@@ -106,7 +106,79 @@ def _generate_grid_experiments(sweep_config: dict) -> list[tuple[str, dict]]:
     return experiment_configs
 
 
+def _format_value(value) -> str:
+    return f"{value:.3g}" if isinstance(value, float) else str(value)
+
+
+def _generate_variant_experiments(sweep_config: dict) -> list[tuple[str, dict]]:
+    """Cartesian product over named variant axes, optionally crossed with `grid`.
+
+    `variants` maps axis -> {variant_name: overrides_dict}. Each combination
+    deep-merges the base config with one overrides dict per axis (in axis order),
+    then applies scalar `grid` overrides on top. Naming uses `naming.format` with
+    {axis_name} / {grid_param} placeholders, else joins variant names and grid
+    values with underscores.
+    """
+    base_config = sweep_config["_base_config"]
+    variants_spec = sweep_config["variants"]
+    fixed_overrides = sweep_config.get("fixed_overrides", {})
+    naming_config = sweep_config.get("naming", {})
+    base_with_fixed = _deep_merge_dict(base_config, fixed_overrides)
+
+    axis_names = list(variants_spec.keys())
+    axis_options = [list(variants_spec[a].items()) for a in axis_names]
+
+    grid_spec = sweep_config.get("grid", {})
+    grid_names = list(grid_spec.keys())
+    grid_values = [grid_spec[n] for n in grid_names]
+
+    n_total = 1
+    for opts in axis_options:
+        n_total *= len(opts)
+    for vals in grid_values:
+        n_total *= len(vals)
+    print(f"Generating variant sweep: {n_total} experiments "
+          f"({' x '.join(f'{a}:{len(o)}' for a, o in zip(axis_names, axis_options, strict=True))}"
+          f"{' x ' if grid_names else ''}"
+          f"{' x '.join(f'{n}:{len(v)}' for n, v in zip(grid_names, grid_values, strict=True))})")
+
+    experiment_configs = []
+    for variant_combo in itertools.product(*axis_options):
+        for grid_combo in itertools.product(*grid_values):
+            merged = base_with_fixed
+            substitutions: dict[str, str] = {}
+            for axis, (vname, overrides) in zip(axis_names, variant_combo, strict=True):
+                merged = _deep_merge_dict(merged, overrides or {})
+                substitutions[axis] = str(vname)
+
+            grid_overrides: dict = {}
+            for gname, gval in zip(grid_names, grid_combo, strict=True):
+                if "__" in gname:
+                    keys = gname.split("__")
+                    current = grid_overrides
+                    for key in keys[:-1]:
+                        current = current.setdefault(key, {})
+                    current[keys[-1]] = gval
+                else:
+                    grid_overrides[gname] = gval
+                substitutions[gname] = _format_value(gval)
+            merged = _deep_merge_dict(merged, grid_overrides)
+
+            if "format" in naming_config:
+                exp_name = naming_config["format"]
+                for key, val in substitutions.items():
+                    exp_name = exp_name.replace("{" + key + "}", val)
+            else:
+                exp_name = "_".join(substitutions.values())
+
+            experiment_configs.append((exp_name, merged))
+
+    return experiment_configs
+
+
 def generate_experiment_configs(sweep_config: dict) -> list[tuple[str, dict]]:
+    if "variants" in sweep_config:
+        return _generate_variant_experiments(sweep_config)
     if "grid" in sweep_config:
         return _generate_grid_experiments(sweep_config)
 

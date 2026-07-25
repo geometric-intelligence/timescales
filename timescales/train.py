@@ -38,6 +38,7 @@ from timescales.datamodules import (
 from timescales import run_ids
 from timescales import convergence as convergence_metrics
 from timescales import provenance
+from timescales.presets import resolve_presets
 
 log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "logs"))
 
@@ -265,9 +266,15 @@ def single_seed(config: dict) -> dict:
     # Deterministic identity: same (config, seed) -> same run_id and output dir,
     # so reruns are idempotent and sweeps resumable. started_at is kept only for
     # human-readable logging/wandb, not for the directory layout.
+    # NOTE: fingerprint the *as-authored* config BEFORE preset resolution, so
+    # sweep-level resume (which fingerprints the authored config) agrees.
     fingerprint = run_ids.config_fingerprint(config)
     run_id = run_ids.run_id_for(config, seed)
     started_at = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Expand high-level presets (trainable / tau_init) into low-level keys; the
+    # resolved config is what gets saved alongside the run.
+    resolve_presets(config)
 
     print(f"[train] model_type={model_type}, seed={seed}, run_id={run_id}")
 
@@ -340,7 +347,14 @@ def single_seed(config: dict) -> dict:
         if wrec is not None:
             for p in wrec.parameters():
                 p.requires_grad_(False)
-            print("  freeze_wrec=True — W_rec frozen (only W_in, W_out train)")
+            print("  freeze_wrec=True — W_rec frozen")
+
+    if config.get("freeze_win", False) and hasattr(model, "rnn_step"):
+        win = getattr(model.rnn_step, "W_in", None)
+        if win is not None:
+            for p in win.parameters():
+                p.requires_grad_(False)
+            print("  freeze_win=True — W_in frozen")
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"  Model: {model.__class__.__name__}, trainable params: {n_params}")

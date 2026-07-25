@@ -377,12 +377,31 @@ class RNN(nn.Module):
             elif distribution == "gaussian":
                 mean = float(time_constants_config["mean"])
                 std = float(time_constants_config["std"])
-                
+
                 time_constants = torch.normal(mean, std, size=(hidden_size,))
-                
+
                 min_tc = time_constants_config.get("min_time_constant", 0.01)
                 max_tc = time_constants_config.get("max_time_constant", 1.0)
                 time_constants = torch.clamp(time_constants, min=min_tc, max=max_tc)
+
+            elif distribution == "lognormal":
+                # tau = exp(N(ln(median), sigma^2)), clipped to the same
+                # [min, max] range as the power-law init for a fair comparison.
+                median = float(time_constants_config["median"])
+                sigma = float(time_constants_config["sigma"])
+
+                log_tau = torch.normal(
+                    float(torch.log(torch.tensor(median))), sigma,
+                    size=(hidden_size,),
+                )
+                time_constants = torch.exp(log_tau)
+
+                min_tc = time_constants_config.get("min_time_constant")
+                max_tc = time_constants_config.get("max_time_constant")
+                if min_tc is not None or max_tc is not None:
+                    time_constants = torch.clamp(
+                        time_constants, min=min_tc, max=max_tc
+                    )
 
             else:
                 raise ValueError(f"Unknown continuous distribution: {distribution}")

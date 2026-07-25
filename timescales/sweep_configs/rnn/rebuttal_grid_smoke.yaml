@@ -1,0 +1,50 @@
+# Smoke version of rebuttal_grid.yaml — same variant axes, tiny net / few steps,
+# single g, 1 seed, CPU. Verifies every (task x init x trainable) combination
+# trains end-to-end before the real grid launches (18 runs, ~2 min).
+#
+# Run:  poetry run python sweep.py --sweep sweep_configs/rnn/rebuttal_grid_smoke.yaml --cpu
+
+base_config: "configs/rnn/smoke.yaml"
+n_seeds: 1
+seeds_outermost: true
+
+naming:
+  format: "{task}_{init}_{trainable}_g{recurrent_gain}"
+
+fixed_overrides:
+  track_spectral_snapshots: true
+
+variants:
+  task:
+    ff:
+      task: flip_flop
+      tau_min: 1.0
+      tau_max: 20.0
+    sine:
+      task: sine_wave
+      tau_min: 1.0
+      tau_max: 20.0
+
+  init:
+    uniform:
+      tau_init:
+        scheme: uniform
+        value: 1.0
+    powerlaw:
+      tau_init:
+        scheme: powerlaw
+        exponent: 1.0
+    lognormal:
+      tau_init:
+        scheme: lognormal
+
+  trainable:
+    full:
+      trainable: full
+    fixedA:
+      trainable: fixedA
+    reservoir:
+      trainable: reservoir
+
+grid:
+  recurrent_gain: [0.9]
