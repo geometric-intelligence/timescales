@@ -1,8 +1,8 @@
-# Smoke version of rebuttal_grid.yaml — same variant axes, tiny net / few steps,
+# Smoke version of tau_init_grid.yaml — same variant axes, tiny net / few steps,
 # single g, 1 seed, CPU. Verifies every (task x init x trainable) combination
 # trains end-to-end before the real grid launches (18 runs, ~2 min).
 #
-# Run:  poetry run python sweep.py --sweep sweep_configs/rnn/rebuttal_grid_smoke.yaml --cpu
+# Run:  poetry run python sweep.py --sweep sweep_configs/rnn/tau_init_grid_smoke.yaml --cpu
 
 base_config: "configs/rnn/smoke.yaml"
 n_seeds: 1

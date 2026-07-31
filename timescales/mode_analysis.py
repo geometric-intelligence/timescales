@@ -159,6 +159,76 @@ def dominance_ratio(row) -> float:
     return float(c[0] / c[1])
 
 
+def output_target_map(config: dict) -> list[tuple[int, float, str]]:
+    """Which task timescale each *output channel* is responsible for.
+
+    Returns (output_index, target_timescale_steps, kind) triples.
+
+    - flip-flop: output k reads bit k, whose timescale is the mean inter-pulse
+      interval 1/p_k -> a decay timescale.
+    - sine-wave: outputs 2k and 2k+1 are the (cos, sin) pair of frequency k, so both
+      are responsible for the same period T_k -> an oscillation timescale.
+    """
+    ts = task_timescales_steps(config)
+    task = config.get("task", "flip_flop")
+    if task in ("flip_flop", "signed_flip_flop"):
+        return [(i, t, "decay") for i, t in enumerate(ts["decay"])]
+    if task == "sine_wave":
+        out = []
+        for k, T in enumerate(ts["oscillation"]):
+            out.append((2 * k, T, "oscillation"))
+            out.append((2 * k + 1, T, "oscillation"))
+        return out
+    return []
+
+
+def matching_errors_by_coupling(eigvals, W_out, V, config: dict) -> dict:
+    """Matching error using each output's *most strongly coupled* mode.
+
+    For output channel k we take the mode j* = argmax_j C[k, j] of the readout
+    coupling matrix, read that mode's timescale (decay or oscillation, per the task),
+    and score |log(tau_{j*} / tau_task_k)|.
+
+    Unlike the nearest-neighbour definition this is a genuine one-to-one assignment —
+    each output commits to exactly one mode — and it only credits a match when the
+    network actually reads from the mode in question, so a well-placed but unused mode
+    earns nothing. If an output's dominant mode has no timescale of the required kind
+    (e.g. a purely real mode asked for an oscillation period) the error is undefined and
+    the output is counted in ``n_undefined`` rather than dropped.
+    """
+    lam = np.asarray(eigvals, dtype=complex).ravel()
+    groups = pair_indices(lam)
+    C = pair_couplings(W_out, V, groups)          # (n_outputs, n_modes)
+
+    # Per-mode timescales, following the same conventions as mode_timescales().
+    decay_ts, osc_ts = [], []
+    for idx in groups:
+        mags = np.abs(lam[idx])
+        mag = float(np.mean(mags))
+        decay_ts.append(-1.0 / np.log(mag) if 0 < mag < 1 else np.nan)
+        theta = float(np.mean(np.abs(np.angle(lam[idx]))))
+        osc_ts.append(2.0 * np.pi / theta if theta > 1e-9 else np.nan)
+    decay_ts, osc_ts = np.asarray(decay_ts), np.asarray(osc_ts)
+
+    errs, n_undef = [], 0
+    for out_idx, target, kind in output_target_map(config):
+        if out_idx >= C.shape[0] or target <= 0:
+            continue
+        j = int(np.argmax(C[out_idx]))
+        tau = (decay_ts if kind == "decay" else osc_ts)[j]
+        if not np.isfinite(tau) or tau <= 0:
+            n_undef += 1
+            continue
+        errs.append(float(abs(np.log(tau / target))))
+
+    return {
+        "coupled_mean_abs_log_err": float(np.mean(errs)) if errs else None,
+        "coupled_max_abs_log_err": float(np.max(errs)) if errs else None,
+        "coupled_n_undefined": n_undef,
+        "coupled_n_scored": len(errs),
+    }
+
+
 def assignment_uniqueness(C_pairs: np.ndarray) -> float:
     """Fraction of outputs whose argmax mode is not the argmax of another output."""
     tops = np.argmax(C_pairs, axis=1)
@@ -232,6 +302,10 @@ def analyze_seed_dir(seed_dir: str, tag: str = "final") -> dict | None:
     for kind in ("decay", "oscillation"):
         for i, e in enumerate(match[kind]):
             row[f"match_{kind}_{i}_abs_log_err"] = e
+
+    # Coupling-based matching: score each output against the mode it actually reads
+    # from, rather than against the nearest mode anywhere in the spectrum.
+    row.update(matching_errors_by_coupling(eigvals, blob["W_out"], blob["V"], config))
 
     seed = config.get("seed") or 0
     row.update(coupling_metrics(
