@@ -1,0 +1,70 @@
+# Timescale-initialization grid — nonlinear companion.
+#
+# Exact nonlinear analog of tau_init_grid.yaml: same crosses, same gain grid,
+# same seed count, so runs are directly comparable pair-for-pair with the
+# linear grid (same task/init/trainable/g/seed keys, different sweep_dir).
+#
+# Only two fixed_overrides differ from the linear grid:
+#   activation:    "Identity" -> "Tanh"
+#   dynamics_type: "rate"     -> "voltage"   (tau*dx/dt = -x + g*W*tanh(x) + W_in*u)
+#
+# Gain grid intentionally left at {0.3, 0.5, 0.7, 0.9, 0.95} (not extended
+# into the supercritical g>1 regime) to keep this an apples-to-apples
+# linear-vs-nonlinear comparison rather than a separate stability study.
+#
+# Run AFTER tau_init_grid.yaml completes (same 8 GPUs):
+#   poetry run python sweep.py --sweep sweep_configs/rnn/tau_init_grid_tanh_voltage.yaml \
+#       --gpus 0,1,2,3,4,5,6,7
+# Resumable: re-invoke the same command after any interruption.
+
+base_config: "configs/rnn/flip_flop_hetero.yaml"
+n_seeds: 20
+seeds_outermost: true   # first full pass over all conditions completes before seed 2
+
+naming:
+  format: "{task}_{init}_{trainable}_g{recurrent_gain}"
+
+fixed_overrides:
+  activation: "Tanh"
+  dynamics_type: "voltage"
+  track_tau_trajectory: true
+  track_spectral_snapshots: true
+  eps_real_axis: 0.1
+  conv_final_frac: 0.9
+  conv_mse_threshold: 0.1
+  learning_rate: 0.001
+
+variants:
+  task:
+    ff:
+      tau_min: 1.0
+      tau_max: 200.0
+    sine:
+      project_name: sine_wave
+      task: sine_wave
+      n_pairs: 3
+      periods: [20.0, 50.0, 100.0]
+      init_hidden_value: 1.0
+      random_phase: false
+      num_time_steps: 100
+      dt: 1.0
+      num_val_trajectories: 200
+      tau_min: 10.0
+      tau_max: 200.0
+
+  init:
+    uniform:
+      tau_init:
+        scheme: uniform
+        value: 1.0
+    powerlaw:
+      tau_init:
+        scheme: powerlaw
+        exponent: 1.0
+
+  trainable:
+    full:
+      trainable: full
+
+grid:
+  recurrent_gain: [0.3, 0.5, 0.7, 0.9, 0.95]
