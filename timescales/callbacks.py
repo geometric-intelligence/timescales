@@ -14,6 +14,8 @@ class LossLoggerCallback(L.Callback):
 
         self.train_losses: list[float] = []
         self.val_losses: list[float] = []
+        self.train_objectives: list[float] = []
+        self.val_objectives: list[float] = []
         self.train_accuracies: list[float] = []
         self.val_accuracies: list[float] = []
         self.steps: list[int] = []
@@ -25,6 +27,10 @@ class LossLoggerCallback(L.Callback):
         train_loss = trainer.logged_metrics.get("train_loss_epoch", None)
         if train_loss is not None:
             self.train_losses.append(float(train_loss))
+
+        train_objective = trainer.logged_metrics.get("train_objective_epoch", None)
+        if train_objective is not None:
+            self.train_objectives.append(float(train_objective))
 
         train_acc = trainer.logged_metrics.get("train_accuracy_epoch", None)
         if train_acc is not None:
@@ -39,6 +45,10 @@ class LossLoggerCallback(L.Callback):
         if val_loss is not None:
             self.val_losses.append(float(val_loss))
             self.steps.append(trainer.global_step)
+
+        val_objective = trainer.logged_metrics.get("val_objective", None)
+        if val_objective is not None:
+            self.val_objectives.append(float(val_objective))
 
         val_acc = trainer.logged_metrics.get("val_accuracy", None)
         if val_acc is not None:
@@ -62,6 +72,8 @@ class LossLoggerCallback(L.Callback):
             "steps": self.steps,
             "train_losses": self.train_losses,
             "val_losses": self.val_losses,
+            "train_objectives": self.train_objectives,
+            "val_objectives": self.val_objectives,
             "train_accuracies": self.train_accuracies,
             "val_accuracies": self.val_accuracies,
             "val_losses_per_bit": self.val_losses_per_bit,
@@ -70,6 +82,115 @@ class LossLoggerCallback(L.Callback):
 
         with open(os.path.join(self.save_dir, "training_losses.json"), "w") as f:
             json.dump(loss_data, f, indent=2)
+
+
+class RecurrentRestructuringCallback(L.Callback):
+    """Track how the recurrent matrix moves away from its initialization.
+
+    Frobenius displacement is recorded alongside scale-sensitive and directional
+    diagnostics so no single scalar is treated as a complete measure of feature
+    learning. The effective metrics include the forward multiplier (g or
+    g/sqrt(N), depending on parameterization).
+    """
+
+    def __init__(self, save_dir: str):
+        super().__init__()
+        self.save_dir = save_dir
+        self.initial_weight: torch.Tensor | None = None
+        self.records: list[dict[str, float | int | str]] = []
+
+    @rank_zero_only
+    def on_fit_start(self, trainer, pl_module):
+        model = getattr(pl_module, "model", pl_module)
+        self.initial_weight = (
+            model.rnn_step.W_rec.weight.detach().cpu().double().clone()
+        )
+        self._record(trainer, pl_module, tag="init", log_metrics=False)
+
+    @rank_zero_only
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if trainer.sanity_checking:
+            return
+        self._record(trainer, pl_module, tag="validation", log_metrics=True)
+
+    @rank_zero_only
+    def on_train_end(self, trainer, pl_module):
+        self._record(trainer, pl_module, tag="final", log_metrics=False)
+
+    def _record(self, trainer, pl_module, tag: str, log_metrics: bool) -> None:
+        if self.initial_weight is None:
+            return
+
+        model = getattr(pl_module, "model", pl_module)
+        current = model.rnn_step.W_rec.weight.detach().cpu().double()
+        initial = self.initial_weight
+        delta = current - initial
+
+        eps = torch.finfo(torch.float64).eps
+        n_elements = initial.numel()
+        init_fro = torch.linalg.vector_norm(initial)
+        current_fro = torch.linalg.vector_norm(current)
+        delta_fro = torch.linalg.vector_norm(delta)
+        relative_delta = delta_fro / torch.clamp(init_fro, min=eps)
+
+        initial_flat = initial.flatten()
+        current_flat = current.flatten()
+        delta_flat = delta.flatten()
+        cosine = torch.dot(initial_flat, current_flat) / torch.clamp(
+            init_fro * current_fro, min=eps
+        )
+        parallel_coefficient = torch.dot(delta_flat, initial_flat) / torch.clamp(
+            init_fro**2, min=eps
+        )
+        orthogonal_delta = delta - parallel_coefficient * initial
+        orthogonal_delta_fro = torch.linalg.vector_norm(orthogonal_delta)
+
+        recurrent_scale = float(model.rnn_step.recurrent_weight_scale)
+        record: dict[str, float | int | str] = {
+            "tag": tag,
+            "step": int(trainer.global_step),
+            "epoch": int(trainer.current_epoch),
+            "wrec_init_fro": float(init_fro),
+            "wrec_current_fro": float(current_fro),
+            "wrec_delta_fro": float(delta_fro),
+            "wrec_relative_delta_fro": float(relative_delta),
+            "wrec_delta_rms": float(delta_fro / n_elements**0.5),
+            "wrec_cosine_from_init": float(cosine),
+            "wrec_delta_parallel_coefficient": float(parallel_coefficient),
+            "wrec_delta_orthogonal_fro": float(orthogonal_delta_fro),
+            "recurrent_weight_scale": recurrent_scale,
+            "effective_wrec_delta_fro": float(abs(recurrent_scale) * delta_fro),
+            "effective_wrec_delta_rms": float(
+                abs(recurrent_scale) * delta_fro / n_elements**0.5
+            ),
+        }
+        self.records.append(record)
+
+        if log_metrics:
+            for key in (
+                "wrec_delta_fro",
+                "wrec_relative_delta_fro",
+                "wrec_delta_rms",
+                "wrec_cosine_from_init",
+                "wrec_delta_orthogonal_fro",
+                "effective_wrec_delta_fro",
+                "effective_wrec_delta_rms",
+            ):
+                pl_module.log(
+                    f"restructuring/{key}",
+                    record[key],
+                    on_step=False,
+                    on_epoch=True,
+                )
+
+        self._save()
+
+    @rank_zero_only
+    def _save(self) -> None:
+        os.makedirs(self.save_dir, exist_ok=True)
+        path = os.path.join(self.save_dir, "recurrent_restructuring.json")
+        with open(path, "w") as f:
+            json.dump({"records": self.records}, f, indent=2)
 
 
 class GradientStatisticsCallback(L.Callback):
@@ -459,8 +580,12 @@ class SpectralTrajectoryCallback(L.Callback):
             alphas = rnn_step.current_alphas.detach().cpu().numpy().astype(np.float64)
 
         g = float(rnn_step.recurrent_gain)
+        recurrent_weight_scale = float(rnn_step.recurrent_weight_scale)
         dt = float(model.dt)
-        J = np.diag(1.0 - alphas) + (alphas[:, None] * W_rec) * g
+        J = (
+            np.diag(1.0 - alphas)
+            + (alphas[:, None] * W_rec) * recurrent_weight_scale
+        )
 
         eigvals_jacobian = np.linalg.eigvals(J)
         jacobian_order = np.argsort(-np.abs(eigvals_jacobian))
@@ -477,6 +602,8 @@ class SpectralTrajectoryCallback(L.Callback):
             "epoch": trainer.current_epoch,
             "alphas": alphas,
             "recurrent_gain": g,
+            "recurrent_weight_scale": recurrent_weight_scale,
+            "recurrent_parameterization": rnn_step.recurrent_parameterization,
             "eigvals_jacobian": eigvals_jacobian,
             "top_jacobian": top_jacobian,
             "top_jacobian_abs": top_abs,
@@ -485,12 +612,14 @@ class SpectralTrajectoryCallback(L.Callback):
         }
 
         if self.include_wrec:
-            eigvals_wrec = np.linalg.eigvals(W_rec)
+            effective_W_rec = recurrent_weight_scale * W_rec
+            eigvals_wrec = np.linalg.eigvals(effective_W_rec)
             wrec_order = np.argsort(-np.abs(eigvals_wrec))
             top_wrec = eigvals_wrec[wrec_order[: self.top_k]]
             record.update(
                 {
                     "eigvals_wrec": eigvals_wrec,
+                    "effective_W_rec": effective_W_rec,
                     "top_wrec": top_wrec,
                     "top_wrec_demo_transform": 1.0 / (1.0 - top_wrec),
                     "top_wrec_indices": wrec_order[: self.top_k],
@@ -569,14 +698,37 @@ class SpectralSnapshotCallback(L.Callback):
             W_in = rnn_step.W_in.weight.detach().cpu().numpy().astype(np.float64)
             W_in_bias = rnn_step.W_in.bias.detach().cpu().numpy().astype(np.float64) \
                 if rnn_step.W_in.bias is not None else None
-            W_out = model.W_out.weight.detach().cpu().numpy().astype(np.float64)
+            W_out_parameter = (
+                model.W_out.weight.detach().cpu().numpy().astype(np.float64)
+            )
+            W_out = (
+                model.effective_readout_weight.detach().cpu().numpy().astype(np.float64)
+            )
             alphas = rnn_step.current_alphas.detach().cpu().numpy().astype(np.float64)
             taus = rnn_step.current_time_constants.detach().cpu().numpy().astype(np.float64)
 
-        g = float(getattr(model, "rnn_step").recurrent_gain)
+        g = float(model.rnn_step.recurrent_gain)
+        recurrent_weight_scale = float(rnn_step.recurrent_weight_scale)
         N = W_rec.shape[0]
 
-        J = np.diag(1.0 - alphas) + (alphas[:, None] * W_rec) * g
+        J = (
+            np.diag(1.0 - alphas)
+            + (alphas[:, None] * W_rec) * recurrent_weight_scale
+        )
+        effective_W_rec = recurrent_weight_scale * W_rec
+
+        singular_values_wrec = np.linalg.svd(W_rec, compute_uv=False)
+        singular_floor = (
+            max(W_rec.shape)
+            * np.finfo(np.float32).eps
+            * singular_values_wrec[0]
+        )
+        wrec_numerical_rank = int(np.sum(singular_values_wrec > singular_floor))
+        wrec_stable_rank = float(
+            np.sum(singular_values_wrec**2) / singular_values_wrec[0] ** 2
+        )
+        eigvals_effective_wrec = np.linalg.eigvals(effective_W_rec)
+        wrec_spectral_radius = float(np.max(np.abs(eigvals_effective_wrec)))
 
         T_mat, Q = _schur(J, output="real")
 
@@ -616,9 +768,24 @@ class SpectralSnapshotCallback(L.Callback):
             "W_in": W_in,
             "W_in_bias": W_in_bias,
             "W_out": W_out,
+            "W_out_parameter": W_out_parameter,
+            "readout_scale": float(model.readout_scale),
             "alphas": alphas,
             "taus": taus,
             "recurrent_gain": g,
+            "recurrent_weight_scale": recurrent_weight_scale,
+            "recurrent_parameterization": rnn_step.recurrent_parameterization,
+            "wrec_init": getattr(model, "wrec_init", None),
+            "wrec_init_config": getattr(model, "wrec_init_config", None),
+            "singular_values_wrec": singular_values_wrec,
+            "wrec_rank_tolerance": float(singular_floor),
+            "wrec_numerical_rank": wrec_numerical_rank,
+            "wrec_stable_rank": wrec_stable_rank,
+            "wrec_frobenius_norm": float(np.linalg.norm(W_rec)),
+            "wrec_spectral_norm": float(singular_values_wrec[0]),
+            "effective_W_rec": effective_W_rec,
+            "eigvals_effective_wrec": eigvals_effective_wrec,
+            "wrec_spectral_radius": wrec_spectral_radius,
             "J": J,
             "Q": Q,
             "T_mat": T_mat,
@@ -641,6 +808,15 @@ class SpectralSnapshotCallback(L.Callback):
         from timescales.spectral_stats import spectral_pinching_stats
 
         stats = spectral_pinching_stats(eigvals_eig, eps_real_axis=self.eps_real_axis)
+        stats.update(
+            {
+                "wrec_numerical_rank": wrec_numerical_rank,
+                "wrec_stable_rank": wrec_stable_rank,
+                "wrec_frobenius_norm": float(np.linalg.norm(W_rec)),
+                "wrec_spectral_norm": float(singular_values_wrec[0]),
+                "wrec_spectral_radius": wrec_spectral_radius,
+            }
+        )
         stats_path = os.path.join(self.save_dir, f"spectral_stats_{tag}.json")
         with open(stats_path, "w") as f:
             json.dump(stats, f, indent=2)

@@ -1,0 +1,103 @@
+# Rich-learning / staircase-loss pilot.
+#
+# Crosses:
+#   task        {heterogeneous 3-bit flip-flop, heterogeneous 3-frequency sine}
+#   activation  {Identity, Tanh}, both with voltage dynamics
+#   optimizer   {Adam, Clark-style SGLD}
+#   J init scale               {0.03, 0.1, 0.3, 1.0}
+#   Clark output coupling gamma {0.03, 0.1, 0.3, 1.0}
+#
+# 2 x 2 x 2 x 4 x 4 = 128 configurations, one seed each.
+#
+# All conditions use the Clark parameterization:
+#   x[t+1] includes (g/sqrt(N)) J phi(x[t]),  J_ij ~ N(0, init_scale^2)
+#   y[t] = V phi(x[t]) / (N * output_coupling_gamma),  V_ij ~ N(0, 1)
+#   objective data term = N * output_coupling_gamma^2 * task_loss / 2
+#
+# The flip-flop still uses BCE and the sine task MSE, so Clark's MSE theory is
+# exact only for sine; the same width/output scaling is used as a controlled
+# feature-learning knob for flip-flop.
+
+base_config: "configs/rnn/flip_flop_hetero.yaml"
+n_seeds: 1
+seeds_outermost: true
+
+naming:
+  format: "{task}_{activation}_{optimizer}_s{wrec_init_scale}_gamma{output_coupling_gamma}"
+
+fixed_overrides:
+  hidden_size: 512
+  recurrent_gain: 0.5
+  recurrent_parameterization: "clark"
+  wrec_init: "normal_scaled"
+  use_biases: false
+  dynamics_type: "voltage"
+
+  # No scheduled learning-rate changes or explicit weight penalties: task loss
+  # and optimized objective are logged separately.
+  use_lr_scheduler: false
+  lr_scheduler_gamma: 1.0
+  weight_decay: 0.0
+  clark_loss_scaling: true
+
+  max_steps: 1500
+  val_every_n_steps: 10
+  batch_size: 200
+  num_workers: 4
+
+  track_tau_trajectory: false
+  track_spectral_snapshots: true
+  track_spectral_trajectory: false
+  track_gradients: true
+  grad_log_every_n_steps: 10
+  grad_track_per_weight_matrix: true
+  track_recurrent_restructuring: true
+
+  # SGLD-specific settings. They are inert for Adam. beta=2000 and step=0.05
+  # match Clark et al.'s sine-wave experiment; the all-parameter Gaussian prior
+  # is disabled here to keep the requested no-regularization comparison.
+  sgld_beta: 2000.0
+  sgld_add_noise: true
+  sgld_parameter_prior: false
+
+variants:
+  task:
+    ff:
+      project_name: "flip_flop"
+      task: "flip_flop"
+      n_bits: 3
+      p_pulse: [0.005, 0.02, 0.1]
+      pulse_amplitude: 1.0
+      num_time_steps: 1000
+      dt: 0.1
+      num_val_trajectories: 2000
+      init_hidden_value: null
+
+    sine:
+      project_name: "sine_wave"
+      task: "sine_wave"
+      n_pairs: 3
+      periods: [20.0, 50.0, 100.0]
+      init_hidden_value: 1.0
+      random_phase: false
+      num_time_steps: 100
+      dt: 1.0
+      num_val_trajectories: 200
+
+  activation:
+    linear:
+      activation: "Identity"
+    tanh:
+      activation: "Tanh"
+
+  optimizer:
+    adam:
+      optimizer_name: "adam"
+      learning_rate: 0.001
+    sgld:
+      optimizer_name: "sgld"
+      learning_rate: 0.05
+
+grid:
+  wrec_init_scale: [0.03, 0.1, 0.3, 1.0]
+  output_coupling_gamma: [0.03, 0.1, 0.3, 1.0]

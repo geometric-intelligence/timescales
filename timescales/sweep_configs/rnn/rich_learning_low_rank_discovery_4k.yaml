@@ -1,0 +1,147 @@
+# Liu-style low-rank initialization discovery sweep.
+#
+# Method (Liu et al., ICLR 2024; https://arxiv.org/abs/2310.08513):
+#   1. Draw a dense Gaussian recurrent matrix J0.
+#   2. Retain the leading r singular components.
+#   3. Rescale the truncation to preserve ||J0||_F.
+#   4. Train the resulting dense recurrent parameter without a rank constraint.
+#
+# Under the Clark parameterization used here:
+#   J0_ij ~ N(0, 1)
+#   J_r is the Frobenius-matched rank-r truncation of J0
+#   W_eff(0) = (recurrent_gain / sqrt(N)) * wrec_init_scale * J_r
+#
+# Six anchor conditions from the completed Adam discovery sweep are crossed
+# with eight ranks: 6 x 8 = 48 runs, one seed each. Rank cells within an anchor
+# use the same run seed and therefore the same underlying Gaussian J0.
+
+base_config: "configs/rnn/flip_flop_hetero.yaml"
+n_seeds: 1
+seeds_outermost: true
+
+naming:
+  format: "{condition}_rank{wrec_init_config__rank}"
+
+fixed_overrides:
+  hidden_size: 512
+  recurrent_gain: 0.5
+  recurrent_parameterization: "clark"
+  wrec_init: "svd_low_rank"
+  wrec_init_config:
+    normalization: "frobenius"
+  zero_diag_wrec: false
+  use_biases: false
+  dynamics_type: "voltage"
+
+  optimizer_name: "adam"
+  learning_rate: 0.001
+  use_lr_scheduler: false
+  lr_scheduler_gamma: 1.0
+  weight_decay: 0.0
+  clark_loss_scaling: true
+
+  max_steps: 4000
+  val_every_n_steps: 10
+  batch_size: 200
+  num_workers: 4
+
+  # With ten optimizer steps per epoch, this saves milestones at training
+  # steps 1000, 2000, 3000, and 4000 in addition to best/last checkpoints.
+  save_checkpoint_every_n_epochs: 100
+
+  track_tau_trajectory: false
+  track_spectral_snapshots: true
+  track_spectral_trajectory: false
+  track_gradients: true
+  grad_log_every_n_steps: 10
+  grad_track_per_weight_matrix: true
+  track_recurrent_restructuring: true
+
+variants:
+  condition:
+    sine_linear_s0.64_gamma0.25:
+      project_name: "sine_wave"
+      task: "sine_wave"
+      n_pairs: 3
+      periods: [20.0, 50.0, 100.0]
+      init_hidden_value: 1.0
+      random_phase: false
+      num_time_steps: 100
+      dt: 1.0
+      num_val_trajectories: 200
+      activation: "Identity"
+      wrec_init_scale: 0.64
+      output_coupling_gamma: 0.25
+
+    sine_linear_s0.08_gamma1:
+      project_name: "sine_wave"
+      task: "sine_wave"
+      n_pairs: 3
+      periods: [20.0, 50.0, 100.0]
+      init_hidden_value: 1.0
+      random_phase: false
+      num_time_steps: 100
+      dt: 1.0
+      num_val_trajectories: 200
+      activation: "Identity"
+      wrec_init_scale: 0.08
+      output_coupling_gamma: 1.0
+
+    sine_linear_s0.08_gamma1.5:
+      project_name: "sine_wave"
+      task: "sine_wave"
+      n_pairs: 3
+      periods: [20.0, 50.0, 100.0]
+      init_hidden_value: 1.0
+      random_phase: false
+      num_time_steps: 100
+      dt: 1.0
+      num_val_trajectories: 200
+      activation: "Identity"
+      wrec_init_scale: 0.08
+      output_coupling_gamma: 1.5
+
+    sine_tanh_s1_gamma0.03:
+      project_name: "sine_wave"
+      task: "sine_wave"
+      n_pairs: 3
+      periods: [20.0, 50.0, 100.0]
+      init_hidden_value: 1.0
+      random_phase: false
+      num_time_steps: 100
+      dt: 1.0
+      num_val_trajectories: 200
+      activation: "Tanh"
+      wrec_init_scale: 1.0
+      output_coupling_gamma: 0.03
+
+    ff_linear_s0.08_gamma0.03:
+      project_name: "flip_flop"
+      task: "flip_flop"
+      n_bits: 3
+      p_pulse: [0.005, 0.02, 0.1]
+      pulse_amplitude: 1.0
+      num_time_steps: 1000
+      dt: 0.1
+      num_val_trajectories: 2000
+      init_hidden_value: null
+      activation: "Identity"
+      wrec_init_scale: 0.08
+      output_coupling_gamma: 0.03
+
+    ff_tanh_s0.08_gamma0.03:
+      project_name: "flip_flop"
+      task: "flip_flop"
+      n_bits: 3
+      p_pulse: [0.005, 0.02, 0.1]
+      pulse_amplitude: 1.0
+      num_time_steps: 1000
+      dt: 0.1
+      num_val_trajectories: 2000
+      init_hidden_value: null
+      activation: "Tanh"
+      wrec_init_scale: 0.08
+      output_coupling_gamma: 0.03
+
+grid:
+  wrec_init_config__rank: [1, 3, 6, 16, 32, 100, 300, 512]

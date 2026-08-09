@@ -28,6 +28,7 @@ from callbacks import (
     TauTrajectoryCallback,
     SpectralSnapshotCallback,
     SpectralTrajectoryCallback,
+    RecurrentRestructuringCallback,
 )
 from timescales.datamodules import (
     FlipFlopDataModule,
@@ -163,6 +164,12 @@ def _create_rnn_model(config: dict):
         noise_std=config["noise_std"],
         wrec_init=config["wrec_init"],
         wrec_init_config=config.get("wrec_init_config"),
+        wrec_init_scale=config.get("wrec_init_scale", 1.0),
+        recurrent_parameterization=config.get(
+            "recurrent_parameterization", "standard"
+        ),
+        output_coupling_gamma=config.get("output_coupling_gamma"),
+        use_biases=config.get("use_biases", True),
         alpha_parameterization=config["alpha_parameterization"],
         stability_param=config.get("stability_param", 2.0),
         dynamics_type=config["dynamics_type"],
@@ -180,13 +187,20 @@ def _create_rnn_model(config: dict):
         learning_rate=config["learning_rate"],
         weight_decay=config["weight_decay"],
         step_size=lr_step_size,
-        gamma=config["gamma"],
+        gamma=config.get("gamma", 1.0),
         task=config.get("task", "flip_flop"),
         precondition_gradients=config.get("precondition_gradients", False),
         eps_alpha=config.get("eps_alpha", 1e-2),
         lr_interval=lr_interval,
         init_hidden_value=config.get("init_hidden_value"),
         signed_output_threshold=config.get("signed_output_threshold", 0.33),
+        optimizer_name=config.get("optimizer_name", "adam"),
+        use_lr_scheduler=config.get("use_lr_scheduler", True),
+        lr_scheduler_gamma=config.get("lr_scheduler_gamma"),
+        sgld_beta=config.get("sgld_beta", 2000.0),
+        sgld_add_noise=config.get("sgld_add_noise", True),
+        sgld_parameter_prior=config.get("sgld_parameter_prior", False),
+        clark_loss_scaling=config.get("clark_loss_scaling", True),
     )
     return model, lightning_module
 
@@ -239,6 +253,9 @@ def _build_callbacks(config: dict, run_dir: str, datamodule=None):
             log_every_n_steps=config.get("grad_log_every_n_steps", 100),
             track_per_weight_matrix=config.get("grad_track_per_weight_matrix", True),
         ))
+
+    if config.get("track_recurrent_restructuring", False):
+        callbacks.append(RecurrentRestructuringCallback(save_dir=run_dir))
 
     checkpoint_every_n = config.get("save_checkpoint_every_n_epochs", None)
     if checkpoint_every_n is not None and checkpoint_every_n > 0:
@@ -400,7 +417,7 @@ def single_seed(config: dict) -> dict:
         val_every = config.get("val_every_n_steps", 50)
         max_steps = config["max_steps"]
         max_epochs = (max_steps + val_every - 1) // val_every
-        trainer = Trainer(
+        trainer_kwargs = dict(
             logger=wandb_logger,
             max_epochs=max_epochs,
             limit_train_batches=val_every,
@@ -410,8 +427,12 @@ def single_seed(config: dict) -> dict:
             accelerator=accelerator,
             strategy=strategy,
         )
+        gradient_clip_val = config.get("gradient_clip_val")
+        if gradient_clip_val is not None:
+            trainer_kwargs["gradient_clip_val"] = gradient_clip_val
+        trainer = Trainer(**trainer_kwargs)
     else:
-        trainer = Trainer(
+        trainer_kwargs = dict(
             logger=wandb_logger,
             max_epochs=config["max_epochs"],
             default_root_dir=log_dir,
@@ -420,6 +441,10 @@ def single_seed(config: dict) -> dict:
             accelerator=accelerator,
             strategy=strategy,
         )
+        gradient_clip_val = config.get("gradient_clip_val")
+        if gradient_clip_val is not None:
+            trainer_kwargs["gradient_clip_val"] = gradient_clip_val
+        trainer = Trainer(**trainer_kwargs)
 
     skip_training = config.get("skip_training", False)
     final_val_loss = None

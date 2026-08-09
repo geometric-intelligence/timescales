@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import lightning as L
+from numbers import Integral
 from scipy.stats import levy_stable
 
 
@@ -24,6 +25,8 @@ class RNNStep(nn.Module):
         normalize_hidden: bool = False,
         zero_diag_wrec: bool = True,
         recurrent_gain: float = 1.0,
+        recurrent_parameterization: str = "standard",
+        use_biases: bool = True,
         noise_std: float = 0.0,
         alpha_parameterization: str = "exponential",
         dynamics_type: str = "rate",
@@ -47,6 +50,11 @@ class RNNStep(nn.Module):
         :param normalize_hidden: If True, apply LayerNorm to hidden state after each step.
         :param zero_diag_wrec: If True, enforce diag(W_rec) = 0 (no self-connections).
         :param recurrent_gain: Multiplicative gain applied to W_rec output in the forward pass.
+        :param recurrent_parameterization: ``"standard"`` stores an effective
+                         recurrent matrix and applies ``g * W_rec``. ``"clark"``
+                         stores the O(1) matrix J from Clark et al. and applies
+                         ``(g/sqrt(N)) * J``.
+        :param use_biases: Whether W_in and W_rec include trainable biases.
         :param noise_std: Standard deviation of Gaussian noise injected at each step.
                          Scaled by sqrt(dt/tau) per unit for consistent OU-process noise.
         :param alpha_parameterization: How alpha is computed from dt and tau.
@@ -66,6 +74,12 @@ class RNNStep(nn.Module):
         self.normalize_hidden = normalize_hidden
         self.zero_diag_wrec = zero_diag_wrec
         self.recurrent_gain = recurrent_gain
+        if recurrent_parameterization not in ("standard", "clark"):
+            raise ValueError(
+                "recurrent_parameterization must be 'standard' or 'clark', "
+                f"got {recurrent_parameterization!r}"
+            )
+        self.recurrent_parameterization = recurrent_parameterization
         self.noise_std = noise_std
         self.alpha_parameterization = alpha_parameterization
         self.dynamics_type = dynamics_type
@@ -102,8 +116,8 @@ class RNNStep(nn.Module):
             alphas = self._compute_alpha(dt, time_constants)
             self.register_buffer("alphas", alphas)
 
-        self.W_in = nn.Linear(input_size, hidden_size)
-        self.W_rec = nn.Linear(hidden_size, hidden_size)
+        self.W_in = nn.Linear(input_size, hidden_size, bias=use_biases)
+        self.W_rec = nn.Linear(hidden_size, hidden_size, bias=use_biases)
         
         if zero_diag_wrec:
             self.W_rec.weight.data.fill_diagonal_(0)
@@ -117,6 +131,13 @@ class RNNStep(nn.Module):
             return dt / time_constants
         else:
             raise ValueError(f"Unknown alpha_parameterization: {self.alpha_parameterization}")
+
+    @property
+    def recurrent_weight_scale(self) -> float:
+        """Multiplier that maps the stored matrix to effective recurrence."""
+        if self.recurrent_parameterization == "clark":
+            return self.recurrent_gain / self.hidden_size**0.5
+        return self.recurrent_gain
 
     @property
     def current_time_constants(self) -> torch.Tensor:
@@ -179,10 +200,10 @@ class RNNStep(nn.Module):
         alphas = self.current_alphas
 
         if self.dynamics_type == "rate":
-            pre_activation = self.recurrent_gain * self.W_rec(hidden) + self.W_in(input)
+            pre_activation = self.recurrent_weight_scale * self.W_rec(hidden) + self.W_in(input)
             drive = self.activation(pre_activation)
         elif self.dynamics_type == "voltage":
-            drive = self.recurrent_gain * self.W_rec(self.activation(hidden)) + self.W_in(input)
+            drive = self.recurrent_weight_scale * self.W_rec(self.activation(hidden)) + self.W_in(input)
         else:
             raise ValueError(f"Unknown dynamics_type: {self.dynamics_type}")
 
@@ -220,6 +241,10 @@ class RNN(nn.Module):
         noise_std: float = 0.0,
         wrec_init: str = "orthogonal",
         wrec_init_config: dict | None = None,
+        wrec_init_scale: float = 1.0,
+        recurrent_parameterization: str = "standard",
+        output_coupling_gamma: float | None = None,
+        use_biases: bool = True,
         alpha_parameterization: str = "exponential",
         stability_param: float = 2.0,
         dynamics_type: str = "rate",
@@ -249,6 +274,13 @@ class RNN(nn.Module):
         :param wrec_init: Initialization scheme for W_rec.
                          "orthogonal": orthogonal initialization.
                          "normal_scaled": N(0, 1/N) entries (Sompolinsky et al. 1988).
+                         "svd_low_rank": draw the same Gaussian base matrix as
+                              "normal_scaled", retain its leading singular components,
+                              and rescale the truncation to preserve the base Frobenius
+                              norm. Requires ``wrec_init_config = {rank,
+                              normalization?}``, where normalization currently must be
+                              "frobenius". This constrains initialization only; W_rec
+                              remains a dense trainable parameter.
                          "levy_stable": alpha-stable (Levy) distribution.
                          "lognormal": |W_ij| ~ LogNormal(0, 1) with random signs, scaled by 1/sqrt(N).
                          "schur_powerlaw": sample a base W (per `wrec_init_config["base_init"]`,
@@ -259,8 +291,20 @@ class RNN(nn.Module):
                               Requires `wrec_init_config = {beta_H, tau_min, tau_max,
                               base_init?, seed?}`.
         :param wrec_init_config: Optional dict carrying extra hyperparameters for
-                              wrec_init schemes that need them (currently only
-                              "schur_powerlaw"). Mirrors `init_time_constants_config`.
+                              wrec_init schemes that need them (currently
+                              "svd_low_rank" and "schur_powerlaw"). Mirrors
+                              `init_time_constants_config`.
+        :param wrec_init_scale: Multiplicative scale applied to the recurrent
+                              initialization. Under the Clark parameterization,
+                              J_ij ~ N(0, wrec_init_scale^2); under the standard
+                              parameterization, W_ij ~ N(0, wrec_init_scale^2/N).
+        :param recurrent_parameterization: ``"standard"`` for this project's
+                              historical effective-weight convention or
+                              ``"clark"`` for raw O(1) recurrent parameters with
+                              a g/sqrt(N) forward multiplier.
+        :param output_coupling_gamma: If provided, use Clark et al.'s readout
+                              y = V phi(x)/(N gamma), with V initialized N(0, 1).
+        :param use_biases: Whether recurrent and input linear maps have biases.
         :param alpha_parameterization: "exponential" for 1-exp(-dt/tau), "linear" for dt/tau.
         :param stability_param: Stability exponent for Levy-stable distribution (only for wrec_init="levy_stable").
         :param dynamics_type: ODE formulation to discretize ("rate" or "voltage").
@@ -278,6 +322,64 @@ class RNN(nn.Module):
         self.stability_param = stability_param
         self.wrec_init = wrec_init
         self.wrec_init_config = wrec_init_config
+        if wrec_init == "svd_low_rank":
+            cfg = dict(wrec_init_config or {})
+            rank = cfg.get("rank")
+            if isinstance(rank, bool) or not isinstance(rank, Integral):
+                raise ValueError(
+                    "wrec_init='svd_low_rank' requires an integer "
+                    "wrec_init_config['rank']"
+                )
+            rank = int(rank)
+            if not 1 <= rank <= hidden_size:
+                raise ValueError(
+                    "wrec_init_config['rank'] must be between 1 and hidden_size "
+                    f"({hidden_size}), got {rank}"
+                )
+            normalization = cfg.get("normalization", "frobenius")
+            if normalization != "frobenius":
+                raise ValueError(
+                    "wrec_init='svd_low_rank' currently supports only "
+                    "normalization='frobenius', got "
+                    f"{normalization!r}"
+                )
+            if zero_diag_wrec:
+                raise ValueError(
+                    "wrec_init='svd_low_rank' requires zero_diag_wrec=False; "
+                    "zeroing the diagonal after truncation generally changes rank"
+                )
+            cfg["rank"] = rank
+            cfg["normalization"] = normalization
+            self.wrec_init_config = cfg
+        if wrec_init_scale < 0.0:
+            raise ValueError(
+                f"wrec_init_scale must be non-negative, got {wrec_init_scale}"
+            )
+        self.wrec_init_scale = float(wrec_init_scale)
+        if recurrent_parameterization not in ("standard", "clark"):
+            raise ValueError(
+                "recurrent_parameterization must be 'standard' or 'clark', "
+                f"got {recurrent_parameterization!r}"
+            )
+        self.recurrent_parameterization = recurrent_parameterization
+        if recurrent_parameterization == "clark" and wrec_init not in (
+            "normal_scaled",
+            "svd_low_rank",
+        ):
+            raise ValueError(
+                "recurrent_parameterization='clark' currently requires "
+                "wrec_init='normal_scaled' or 'svd_low_rank' so J is based on "
+                "an i.i.d. Gaussian draw"
+            )
+        if output_coupling_gamma is not None and output_coupling_gamma <= 0.0:
+            raise ValueError(
+                "output_coupling_gamma must be positive when provided, "
+                f"got {output_coupling_gamma}"
+            )
+        self.output_coupling_gamma = (
+            None if output_coupling_gamma is None else float(output_coupling_gamma)
+        )
+        self.use_biases = use_biases
         self.recurrent_gain = recurrent_gain
 
         # Build initial log-tau tensor (only for learnable case)
@@ -295,7 +397,7 @@ class RNN(nn.Module):
             elif init_time_constant is not None:
                 print(f"Time constants are LEARNABLE (per-neuron, uniform init at τ={init_time_constant}s)")
             else:
-                print(f"Time constants are LEARNABLE (per-neuron, randomly initialized)")
+                print("Time constants are LEARNABLE (per-neuron, randomly initialized)")
         else:
             if time_constants_config is None:
                 raise ValueError("time_constants_config must be provided when learn_time_constants=False")
@@ -314,6 +416,8 @@ class RNN(nn.Module):
             normalize_hidden=normalize_hidden,
             zero_diag_wrec=zero_diag_wrec,
             recurrent_gain=recurrent_gain,
+            recurrent_parameterization=recurrent_parameterization,
+            use_biases=use_biases,
             noise_std=noise_std,
             alpha_parameterization=alpha_parameterization,
             dynamics_type=dynamics_type,
@@ -440,20 +544,49 @@ class RNN(nn.Module):
             input_t = inputs[:, t, :]
             hidden = self.rnn_step(input_t, hidden)
             hidden_states.append(hidden)
-            outputs.append(self.W_out(hidden))
+            outputs.append(self.readout_scale * self.W_out(self.readout_features(hidden)))
 
         return torch.stack(hidden_states, dim=1), torch.stack(outputs, dim=1)
 
+    def readout_features(self, hidden: torch.Tensor) -> torch.Tensor:
+        """Return the firing-rate variable consumed by the linear readout.
+
+        In voltage dynamics ``hidden`` is the preactivation x, so the
+        conventional readout is phi(x). In rate dynamics the state is already
+        the firing rate and applying phi a second time would be incorrect.
+        """
+        if self.rnn_step.dynamics_type == "voltage":
+            return self.rnn_step.activation(hidden)
+        return hidden
+
+    @property
+    def readout_scale(self) -> float:
+        if self.output_coupling_gamma is None:
+            return 1.0
+        return 1.0 / (self.hidden_size * self.output_coupling_gamma)
+
+    @property
+    def effective_readout_weight(self) -> torch.Tensor:
+        """Weight matrix that maps readout features directly to outputs."""
+        return self.readout_scale * self.W_out.weight
+
     def _initialize_weights(self) -> None:
         """Initialize weights for RNN training."""
-        nn.init.xavier_uniform_(self.rnn_step.W_in.weight)
-        nn.init.zeros_(self.rnn_step.W_in.bias)
+        if self.recurrent_parameterization == "clark":
+            nn.init.normal_(self.rnn_step.W_in.weight, mean=0.0, std=1.0)
+        else:
+            nn.init.xavier_uniform_(self.rnn_step.W_in.weight)
+        if self.rnn_step.W_in.bias is not None:
+            nn.init.zeros_(self.rnn_step.W_in.bias)
 
         n = self.hidden_size
         if self.wrec_init == "orthogonal":
             nn.init.orthogonal_(self.rnn_step.W_rec.weight)
         elif self.wrec_init == "normal_scaled":
-            nn.init.normal_(self.rnn_step.W_rec.weight, mean=0.0, std=1.0 / n**0.5)
+            std = 1.0 if self.recurrent_parameterization == "clark" else 1.0 / n**0.5
+            nn.init.normal_(self.rnn_step.W_rec.weight, mean=0.0, std=std)
+        elif self.wrec_init == "svd_low_rank":
+            self._init_wrec_svd_low_rank(n)
         elif self.wrec_init == "levy_stable":
             samples = levy_stable.rvs(
                 alpha=self.stability_param,
@@ -471,13 +604,63 @@ class RNN(nn.Module):
             with torch.no_grad():
                 self.rnn_step.W_rec.weight.copy_(torch.tensor(samples, dtype=torch.float32))
         elif self.wrec_init == "schur_powerlaw":
+            if self.recurrent_parameterization == "clark":
+                raise ValueError(
+                    "wrec_init='schur_powerlaw' is not compatible with "
+                    "recurrent_parameterization='clark'"
+                )
             self._init_wrec_schur_powerlaw(n)
         else:
             raise ValueError(f"Unknown wrec_init: {self.wrec_init}")
-        nn.init.zeros_(self.rnn_step.W_rec.bias)
+        if self.wrec_init_scale != 1.0:
+            with torch.no_grad():
+                self.rnn_step.W_rec.weight.mul_(self.wrec_init_scale)
+        if self.zero_diag_wrec:
+            with torch.no_grad():
+                self.rnn_step.W_rec.weight.fill_diagonal_(0)
+        if self.rnn_step.W_rec.bias is not None:
+            nn.init.zeros_(self.rnn_step.W_rec.bias)
 
-        nn.init.xavier_uniform_(self.W_out.weight)
+        if self.output_coupling_gamma is None:
+            nn.init.xavier_uniform_(self.W_out.weight)
+        else:
+            nn.init.normal_(self.W_out.weight, mean=0.0, std=1.0)
         nn.init.xavier_uniform_(self.W_h_init.weight)
+
+    def _init_wrec_svd_low_rank(self, n: int) -> None:
+        """Initialize from a Frobenius-matched truncated Gaussian matrix.
+
+        Following Liu et al. (2024), this first draws the same dense Gaussian
+        matrix used by ``normal_scaled``. It then retains the leading ``rank``
+        singular components and rescales the truncation to the dense matrix's
+        Frobenius norm. The model still stores a dense ``nn.Parameter``; rank is
+        not constrained after initialization.
+
+        The base draw deliberately uses the global PyTorch RNG. Consequently,
+        rank cells constructed with the same run seed and otherwise identical
+        model construction share the same underlying dense matrix.
+        """
+        cfg = self.wrec_init_config or {}
+        rank = int(cfg["rank"])
+        weight = self.rnn_step.W_rec.weight
+        std = 1.0 if self.recurrent_parameterization == "clark" else 1.0 / n**0.5
+
+        with torch.no_grad():
+            nn.init.normal_(weight, mean=0.0, std=std)
+            dense_fro = torch.linalg.vector_norm(weight)
+            left, singular_values, right_h = torch.linalg.svd(
+                weight, full_matrices=False
+            )
+            truncated = (
+                left[:, :rank] * singular_values[:rank]
+            ) @ right_h[:rank, :]
+            truncated_fro = torch.linalg.vector_norm(truncated)
+            if not torch.isfinite(truncated_fro) or truncated_fro <= 0:
+                raise RuntimeError(
+                    "Could not Frobenius-normalize the truncated recurrent matrix"
+                )
+            truncated.mul_(dense_fro / truncated_fro)
+            weight.copy_(truncated)
 
     def _init_wrec_schur_powerlaw(self, n: int) -> None:
         """Initialize W_rec via real-Schur spectral surgery on the Jacobian.
@@ -577,11 +760,20 @@ class RNNLightning(L.LightningModule):
         lr_interval: str = "epoch",
         init_hidden_value: float | None = None,
         signed_output_threshold: float = 0.33,
+        optimizer_name: str = "adam",
+        use_lr_scheduler: bool = True,
+        lr_scheduler_gamma: float | None = None,
+        sgld_beta: float = 2000.0,
+        sgld_add_noise: bool = True,
+        sgld_parameter_prior: bool = False,
+        clark_loss_scaling: bool = True,
     ) -> None:
         """
         :param model: The RNN model.
         :param learning_rate: The learning rate.
-        :param weight_decay: The weight decay for the recurrent weights.
+        :param weight_decay: Explicit L2 coefficient for recurrent weights.
+            This is kept for backward compatibility; it is separate from the
+            optimizer and logged only as part of the training objective.
         :param step_size: The step size for the learning rate scheduler.
         :param gamma: The gamma for the learning rate scheduler.
         :param task: The task type.
@@ -592,19 +784,47 @@ class RNNLightning(L.LightningModule):
             scalar value instead of zeros (used by sine_wave task).
         :param signed_output_threshold: Threshold used to binarize signed
             flip-flop outputs into {-1, 0, +1} for accuracy.
+        :param optimizer_name: ``"adam"`` or ``"sgld"``.
+        :param use_lr_scheduler: Whether to attach the historical StepLR schedule.
+        :param lr_scheduler_gamma: Unambiguous StepLR decay factor. If omitted,
+            the legacy ``gamma`` argument is used.
+        :param sgld_beta: Inverse temperature for SGLD noise.
+        :param sgld_add_noise: If False, SGLD reduces to plain gradient descent.
+        :param sgld_parameter_prior: Add Clark et al.'s ||Theta||^2/(2 beta)
+            prior to the objective. Off by default so weight regularization is
+            an explicit experimental choice.
+        :param clark_loss_scaling: Multiply task loss by N gamma^2 / 2 when
+            ``model.output_coupling_gamma`` is set.
         """
         super().__init__()
         self.model = model
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         self.step_size = step_size
-        self.gamma = gamma
+        self.lr_scheduler_gamma = (
+            gamma if lr_scheduler_gamma is None else lr_scheduler_gamma
+        )
+        # Legacy attribute retained for notebooks/checkpoints that inspect it.
+        self.gamma = self.lr_scheduler_gamma
         self.task = task
         self.precondition_gradients = precondition_gradients
         self.eps_alpha = eps_alpha
         self.lr_interval = lr_interval
         self.init_hidden_value = init_hidden_value
         self.signed_output_threshold = signed_output_threshold
+        optimizer_name = optimizer_name.lower()
+        if optimizer_name not in ("adam", "sgld"):
+            raise ValueError(
+                f"optimizer_name must be 'adam' or 'sgld', got {optimizer_name!r}"
+            )
+        if sgld_beta <= 0.0:
+            raise ValueError(f"sgld_beta must be positive, got {sgld_beta}")
+        self.optimizer_name = optimizer_name
+        self.use_lr_scheduler = use_lr_scheduler
+        self.sgld_beta = float(sgld_beta)
+        self.sgld_add_noise = sgld_add_noise
+        self.sgld_parameter_prior = sgld_parameter_prior
+        self.clark_loss_scaling = clark_loss_scaling
         
         if task == "flip_flop":
             self.loss_fn = nn.BCEWithLogitsLoss(reduction='none')
@@ -614,7 +834,29 @@ class RNNLightning(L.LightningModule):
         if precondition_gradients:
             print(f"Gradient preconditioning ENABLED (eps_alpha={eps_alpha})")
         else:
-            print(f"Gradient preconditioning DISABLED")
+            print("Gradient preconditioning DISABLED")
+
+    @property
+    def task_loss_scale(self) -> float:
+        """Clark et al. energy prefactor, or one for the standard readout."""
+        output_gamma = self.model.output_coupling_gamma
+        if output_gamma is None or not self.clark_loss_scaling:
+            return 1.0
+        return 0.5 * self.model.hidden_size * output_gamma**2
+
+    def _compute_objective(self, task_loss: torch.Tensor) -> torch.Tensor:
+        """Build the optimized objective while keeping task loss separately loggable."""
+        objective = self.task_loss_scale * task_loss
+        if self.weight_decay:
+            objective = objective + self.weight_decay * (
+                self.model.rnn_step.W_rec.weight**2
+            ).sum()
+        if self.sgld_parameter_prior:
+            squared_norm = sum(
+                (parameter**2).sum() for parameter in self.model.parameters()
+            )
+            objective = objective + 0.5 * squared_norm / self.sgld_beta
+        return objective
 
     def _compute_loss(self, outputs: torch.Tensor, targets: torch.Tensor) -> tuple[torch.Tensor, dict[str, torch.Tensor] | None]:
         if self.task in ("flip_flop", "sine_wave", "signed_flip_flop"):
@@ -688,10 +930,11 @@ class RNNLightning(L.LightningModule):
             inputs=inputs, **self._get_init_kwargs(inputs, targets)
         )
 
-        loss, per_channel_losses = self._compute_loss(outputs, targets)
-        loss += self.weight_decay * (self.model.rnn_step.W_rec.weight**2).sum()
+        task_loss, per_channel_losses = self._compute_loss(outputs, targets)
+        objective = self._compute_objective(task_loss)
 
-        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("train_loss", task_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("train_objective", objective, on_step=True, on_epoch=True, sync_dist=True)
         
         if per_channel_losses is not None:
             for channel_name, channel_loss in per_channel_losses.items():
@@ -704,7 +947,7 @@ class RNNLightning(L.LightningModule):
                 for channel_name, acc in per_channel_acc.items():
                     self.log(f"train_accuracy_{channel_name}", acc, on_step=True, on_epoch=True, sync_dist=True)
 
-        return loss
+        return objective
 
     def validation_step(self, batch) -> torch.Tensor:
         inputs, aux_info, targets = batch
@@ -713,10 +956,11 @@ class RNNLightning(L.LightningModule):
             inputs=inputs, **self._get_init_kwargs(inputs, targets)
         )
 
-        loss, per_channel_losses = self._compute_loss(outputs, targets)
-        loss += self.weight_decay * (self.model.rnn_step.W_rec.weight**2).sum()
+        task_loss, per_channel_losses = self._compute_loss(outputs, targets)
+        objective = self._compute_objective(task_loss)
 
-        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("val_loss", task_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("val_objective", objective, on_step=False, on_epoch=True, sync_dist=True)
         
         if per_channel_losses is not None:
             for channel_name, channel_loss in per_channel_losses.items():
@@ -729,16 +973,30 @@ class RNNLightning(L.LightningModule):
                 for channel_name, acc in per_channel_acc.items():
                     self.log(f"val_accuracy_{channel_name}", acc, on_step=False, on_epoch=True, sync_dist=True)
 
-        return loss
+        return task_loss
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(
-            self.model.parameters(),
-            lr=self.learning_rate,
-            weight_decay=0.0,
-        )
+        if self.optimizer_name == "adam":
+            optimizer = torch.optim.Adam(
+                self.model.parameters(),
+                lr=self.learning_rate,
+                weight_decay=0.0,
+            )
+        else:
+            from timescales.optimizers import SGLD
+
+            optimizer = SGLD(
+                self.model.parameters(),
+                lr=self.learning_rate,
+                beta=self.sgld_beta,
+                add_noise=self.sgld_add_noise,
+            )
+
+        if not self.use_lr_scheduler:
+            return optimizer
+
         scheduler = torch.optim.lr_scheduler.StepLR(
-            optimizer, step_size=self.step_size, gamma=self.gamma
+            optimizer, step_size=self.step_size, gamma=self.lr_scheduler_gamma
         )
         return {
             "optimizer": optimizer,
