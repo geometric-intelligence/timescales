@@ -17,6 +17,12 @@ __pycache__/
 
 # Generated figures
 timescales/notebooks/**/*.pdf
+# Self-contained Plotly reports are large and reproducible from their generators.
+timescales/notebooks/tau_init_grid/figs/*.html
+# Superseded unlabeled geometry exports; the linear/tanh variants replace these.
+timescales/notebooks/tau_init_grid/figs/sine1_eigenplanes.png
+timescales/notebooks/tau_init_grid/figs/sine2_pca_3d.png
+timescales/notebooks/tau_init_grid/figs/sine3_umap_3d.png
 loss_landscape.png
 output.pdf
 plot_landscape.py
