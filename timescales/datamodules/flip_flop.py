@@ -29,6 +29,7 @@ def simulate_flip_flop_trajectories(
     n_bits: int,
     p_pulse: float | list[float],
     pulse_amplitude: float = 1.0,
+    force_initial_pulse: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Generate flip-flop trajectories.
@@ -36,6 +37,8 @@ def simulate_flip_flop_trajectories(
     Args:
         p_pulse: Pulse probability per timestep. A scalar applies to all bits;
                  a list of length n_bits sets a different rate per bit.
+        force_initial_pulse: If true, every bit receives a random signed pulse
+                             at t=0. Subsequent pulses follow ``p_pulse``.
 
     Returns:
         inputs:  [B, T, n_bits]  pulse inputs (+1 set, -1 reset, 0 hold)
@@ -51,7 +54,17 @@ def simulate_flip_flop_trajectories(
 
     current_state = np.zeros((B, N), dtype=np.float32)
 
-    for t in range(T):
+    start_t = 0
+    if force_initial_pulse and T > 0:
+        initial_sign = (
+            2 * np.random.randint(0, 2, size=(B, N)) - 1
+        ).astype(np.float32)
+        inputs[:, 0, :] = initial_sign * amp
+        current_state[...] = (initial_sign > 0).astype(np.float32)
+        states[:, 0, :] = current_state
+        start_t = 1
+
+    for t in range(start_t, T):
         pulse_mask = np.random.random((B, N)) < p_arr[np.newaxis, :]
         sign = (2 * np.random.randint(0, 2, size=(B, N)) - 1).astype(np.float32)
 
@@ -76,10 +89,12 @@ class FlipFlopOnlineDataset(IterableDataset):
         pulse_amplitude: float,
         num_time_steps: int,
         batch_size: int,
+        force_initial_pulse: bool = False,
     ):
         self.n_bits = n_bits
         self.p_pulse = p_pulse
         self.pulse_amplitude = pulse_amplitude
+        self.force_initial_pulse = force_initial_pulse
         self.num_time_steps = num_time_steps
         self.batch_size = batch_size
 
@@ -91,6 +106,7 @@ class FlipFlopOnlineDataset(IterableDataset):
                 n_bits=self.n_bits,
                 p_pulse=self.p_pulse,
                 pulse_amplitude=self.pulse_amplitude,
+                force_initial_pulse=self.force_initial_pulse,
             )
             yield (
                 torch.from_numpy(inputs),
@@ -105,6 +121,7 @@ class FlipFlopDataModule(L.LightningDataModule):
         n_bits: int = 3,
         p_pulse: float | list[float] = 0.05,
         pulse_amplitude: float = 1.0,
+        force_initial_pulse: bool = False,
         num_time_steps: int = 500,
         num_val_trajectories: int = 2000,
         batch_size: int = 200,
@@ -118,6 +135,7 @@ class FlipFlopDataModule(L.LightningDataModule):
         :param p_pulse: Pulse probability per timestep. Scalar (all bits equal)
                         or list of length n_bits (per-bit rates).
         :param pulse_amplitude: Amplitude of the input pulse.
+        :param force_initial_pulse: Force a random signed pulse on every bit at t=0.
         :param num_time_steps: Sequence length per trajectory.
         :param num_val_trajectories: Number of fixed validation trajectories.
         :param batch_size: Training batch size (fresh trajectories generated per step).
@@ -127,6 +145,7 @@ class FlipFlopDataModule(L.LightningDataModule):
         self.n_bits = n_bits
         self.p_pulse = p_pulse
         self.pulse_amplitude = pulse_amplitude
+        self.force_initial_pulse = force_initial_pulse
         self.num_time_steps = num_time_steps
         self.num_val_trajectories = num_val_trajectories
         self.batch_size = batch_size
@@ -148,6 +167,7 @@ class FlipFlopDataModule(L.LightningDataModule):
             n_bits=self.n_bits,
             p_pulse=self.p_pulse,
             pulse_amplitude=self.pulse_amplitude,
+            force_initial_pulse=self.force_initial_pulse,
         )
         self.val_dataset = TensorDataset(
             torch.from_numpy(inputs),
@@ -159,6 +179,7 @@ class FlipFlopDataModule(L.LightningDataModule):
             n_bits=self.n_bits,
             p_pulse=self.p_pulse,
             pulse_amplitude=self.pulse_amplitude,
+            force_initial_pulse=self.force_initial_pulse,
             num_time_steps=self.num_time_steps,
             batch_size=self.batch_size,
         )

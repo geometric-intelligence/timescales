@@ -424,3 +424,48 @@ def test_low_rank_discovery_sweep_has_48_paired_rank_conditions():
         assert config["use_lr_scheduler"] is False
         assert config["weight_decay"] == 0.0
         assert config["zero_diag_wrec"] is False
+
+
+def test_forced_pulse_pair_sweep_has_two_full_rank_runs_and_dense_checkpoints():
+    project_root = Path(__file__).parents[1]
+    sweep_path = (
+        project_root
+        / "timescales"
+        / "sweep_configs"
+        / "rnn"
+        / "rich_learning_forced_pulse_pair_4k.yaml"
+    )
+    with sweep_path.open() as f:
+        sweep = yaml.safe_load(f)
+    with (project_root / "timescales" / sweep["base_config"]).open() as f:
+        sweep["_base_config"] = yaml.safe_load(f)
+
+    configs = generate_experiment_configs(sweep)
+    assert len(configs) == 2
+    assert sweep["n_seeds"] == 1
+    by_name = dict(configs)
+
+    flip_flop = by_name[
+        "ff_tanh_forced_tau100_200_400_s0.08_gamma0.03"
+    ]
+    assert flip_flop["task"] == "flip_flop"
+    assert flip_flop["activation"] == "Tanh"
+    assert flip_flop["p_pulse"] == pytest.approx([0.01, 0.005, 0.0025])
+    assert flip_flop["force_initial_pulse"] is True
+    assert flip_flop["num_time_steps"] == 2000
+    assert flip_flop["init_hidden_value"] is None
+
+    sine = by_name["sine_linear_s0.08_gamma1"]
+    assert sine["task"] == "sine_wave"
+    assert sine["activation"] == "Identity"
+    assert sine["periods"] == pytest.approx([20.0, 50.0, 100.0])
+
+    for config in by_name.values():
+        assert config["wrec_init"] == "normal_scaled"
+        assert config["wrec_init_scale"] == pytest.approx(0.08)
+        assert config["max_steps"] == 4000
+        assert (
+            config["save_checkpoint_every_n_epochs"]
+            * config["val_every_n_steps"]
+            == 100
+        )

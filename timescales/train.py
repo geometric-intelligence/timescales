@@ -85,6 +85,7 @@ def create_datamodule(config: dict):
             n_bits=config["n_bits"],
             p_pulse=config["p_pulse"],
             pulse_amplitude=config.get("pulse_amplitude", 1.0),
+            force_initial_pulse=config.get("force_initial_pulse", False),
             num_time_steps=config["num_time_steps"],
             num_val_trajectories=config.get("num_val_trajectories", 2000),
             batch_size=config["batch_size"],
