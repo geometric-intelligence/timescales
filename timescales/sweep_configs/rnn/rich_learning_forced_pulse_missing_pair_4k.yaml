@@ -1,0 +1,72 @@
+# Missing activation/task pairings for the full-rank rich-learning follow-up.
+# These runs complement `rich_learning_forced_pulse_pair_4k.yaml`, which
+# contains tanh flip-flop and linear sine-wave runs.
+
+base_config: "configs/rnn/flip_flop_hetero.yaml"
+n_seeds: 1
+seeds_outermost: true
+
+naming:
+  format: "{condition}"
+
+fixed_overrides:
+  hidden_size: 512
+  recurrent_gain: 0.5
+  recurrent_parameterization: "clark"
+  wrec_init: "normal_scaled"
+  wrec_init_scale: 0.08
+  zero_diag_wrec: false
+  use_biases: false
+  dynamics_type: "voltage"
+
+  optimizer_name: "adam"
+  learning_rate: 0.001
+  use_lr_scheduler: false
+  lr_scheduler_gamma: 1.0
+  weight_decay: 0.0
+  clark_loss_scaling: true
+
+  max_steps: 4000
+  val_every_n_steps: 10
+  batch_size: 200
+  num_workers: 4
+
+  # Ten optimizer steps per epoch makes this one checkpoint per 100 steps.
+  save_checkpoint_every_n_epochs: 10
+
+  track_tau_trajectory: false
+  track_spectral_snapshots: true
+  track_spectral_trajectory: false
+  track_gradients: true
+  grad_log_every_n_steps: 10
+  grad_track_per_weight_matrix: true
+  track_recurrent_restructuring: true
+
+variants:
+  condition:
+    ff_linear_forced_tau100_200_400_s0.08_gamma0.03:
+      project_name: "flip_flop"
+      task: "flip_flop"
+      n_bits: 3
+      p_pulse: [0.01, 0.005, 0.0025]
+      pulse_amplitude: 1.0
+      force_initial_pulse: true
+      num_time_steps: 2000
+      dt: 0.1
+      num_val_trajectories: 2000
+      init_hidden_value: null
+      activation: "Identity"
+      output_coupling_gamma: 0.03
+
+    sine_tanh_s0.08_gamma1:
+      project_name: "sine_wave"
+      task: "sine_wave"
+      n_pairs: 3
+      periods: [20.0, 50.0, 100.0]
+      init_hidden_value: 1.0
+      random_phase: false
+      num_time_steps: 100
+      dt: 1.0
+      num_val_trajectories: 200
+      activation: "Tanh"
+      output_coupling_gamma: 1.0
