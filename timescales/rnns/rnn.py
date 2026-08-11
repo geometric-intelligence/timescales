@@ -828,7 +828,11 @@ class RNNLightning(L.LightningModule):
         
         if task == "flip_flop":
             self.loss_fn = nn.BCEWithLogitsLoss(reduction='none')
-        elif task in ("sine_wave", "signed_flip_flop"):
+        elif task in (
+            "sine_wave",
+            "signed_flip_flop",
+            "cumulative_vector_addition",
+        ):
             self.loss_fn = nn.MSELoss(reduction='none')
 
         if precondition_gradients:
@@ -859,7 +863,12 @@ class RNNLightning(L.LightningModule):
         return objective
 
     def _compute_loss(self, outputs: torch.Tensor, targets: torch.Tensor) -> tuple[torch.Tensor, dict[str, torch.Tensor] | None]:
-        if self.task in ("flip_flop", "sine_wave", "signed_flip_flop"):
+        if self.task in (
+            "flip_flop",
+            "sine_wave",
+            "signed_flip_flop",
+            "cumulative_vector_addition",
+        ):
             batch_size, seq_len, n_channels = outputs.shape
             outputs_flat = outputs.reshape(-1, n_channels)
             targets_flat = targets.reshape(-1, n_channels)
@@ -898,7 +907,7 @@ class RNNLightning(L.LightningModule):
                 for i in range(per_channel_acc.shape[0])
             }
             return overall_acc, per_channel_dict
-        elif self.task == "sine_wave":
+        elif self.task in ("sine_wave", "cumulative_vector_addition"):
             mse = ((outputs - targets) ** 2).mean()
             var = targets.var()
             r_squared = 1.0 - mse / (var + 1e-8)

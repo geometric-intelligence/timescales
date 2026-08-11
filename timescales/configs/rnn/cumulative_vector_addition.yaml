@@ -1,0 +1,59 @@
+# Cumulative Vector Addition
+#
+# At every timestep, the network receives a D-dimensional Gaussian increment
+# and must output the inclusive running sum. With the defaults below, the
+# expected standard deviation of the final target is approximately one.
+
+project_name: "cumulative_vector_addition"
+model_type: "rnn"
+task: "cumulative_vector_addition"
+seed: 0
+
+accelerator: "gpu"
+devices: "auto"
+
+# Task parameters
+vector_size: 3
+increment_distribution: "gaussian"  # "rademacher" gives signed discrete steps
+increment_std: 0.1
+increment_probability: 1.0
+
+# Trajectory parameters
+num_time_steps: 100
+dt: 1.0
+
+# Model parameters
+hidden_size: 256
+activation: "Identity"
+
+# Fixed intrinsic neuron time constant. The learned integrator must compensate
+# the leak by forming a neutral eigenvalue at one in the full transition map.
+learn_time_constants: false
+time_constants_config:
+  type: "discrete"
+  values: [1.0]
+shared_time_constant: false
+normalize_hidden: false
+zero_diag_wrec: false
+recurrent_gain: 0.5
+noise_std: 0.0
+wrec_init: "normal_scaled"
+alpha_parameterization: "exponential"
+dynamics_type: "voltage"
+use_biases: false
+
+# Step-based training
+learning_rate: 0.001
+weight_decay: 0.0
+max_steps: 2000
+val_every_n_steps: 10
+lr_step_size: 1000
+gamma: 1.0
+batch_size: 200
+num_val_trajectories: 500
+num_workers: 4
+
+# Logging
+viz_log_every_n_steps: 500
+grad_log_every_n_steps: 100
+grad_track_per_weight_matrix: true

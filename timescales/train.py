@@ -35,6 +35,7 @@ from timescales.datamodules import (
     SignedFlipFlopDataModule,
     NullDataModule,
     SineWaveDataModule,
+    CumulativeVectorAdditionDataModule,
 )
 from timescales import run_ids
 from timescales import convergence as convergence_metrics
@@ -122,6 +123,22 @@ def create_datamodule(config: dict):
         config["input_size"] = datamodule.input_size
         config["output_size"] = datamodule.output_size
         config["init_hidden_value"] = datamodule.init_hidden_value
+
+    elif task == "cumulative_vector_addition":
+        datamodule = CumulativeVectorAdditionDataModule(
+            vector_size=config.get("vector_size", 2),
+            increment_distribution=config.get(
+                "increment_distribution", "gaussian"
+            ),
+            increment_std=config.get("increment_std", 0.1),
+            increment_probability=config.get("increment_probability", 1.0),
+            num_time_steps=config["num_time_steps"],
+            num_val_trajectories=config.get("num_val_trajectories", 500),
+            batch_size=config["batch_size"],
+            num_workers=config["num_workers"],
+        )
+        config["input_size"] = datamodule.input_size
+        config["output_size"] = datamodule.output_size
 
     elif task == "null":
         datamodule = NullDataModule(

@@ -1,0 +1,33 @@
+# Four-run pilot for the cumulative vector-addition task:
+# vector dimension {1, 2} x activation {Identity, Tanh}, one seed each.
+
+base_config: "configs/rnn/cumulative_vector_addition.yaml"
+n_seeds: 1
+seeds_outermost: true
+
+naming:
+  format: "{network}_D{vector_size}"
+
+fixed_overrides:
+  dynamics_type: "voltage"
+  optimizer_name: "adam"
+  use_lr_scheduler: false
+  weight_decay: 0.0
+  max_steps: 2000
+  val_every_n_steps: 10
+
+  # Ten optimizer steps per epoch: save model states every 100 steps.
+  save_checkpoint_every_n_epochs: 10
+  track_tau_trajectory: false
+  track_spectral_snapshots: true
+  track_recurrent_restructuring: true
+
+variants:
+  network:
+    linear:
+      activation: "Identity"
+    tanh:
+      activation: "Tanh"
+
+grid:
+  vector_size: [1, 2]
