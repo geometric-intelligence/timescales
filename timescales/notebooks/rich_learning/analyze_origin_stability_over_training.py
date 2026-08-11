@@ -37,10 +37,14 @@ def main() -> None:
 
     with (run_dir / "run_config.yaml").open() as handle:
         config = yaml.safe_load(handle)
-    if config.get("task") != "flip_flop" or config.get("activation") != "Tanh":
-        raise ValueError("This analysis expects the tanh flip-flop run")
-    config.setdefault("input_size", int(config["n_bits"]))
-    config.setdefault("output_size", int(config["n_bits"]))
+    if config.get("activation") != "Tanh":
+        raise ValueError("This analysis expects a tanh network")
+    if config.get("task") == "sine_wave":
+        config.setdefault("input_size", 1)
+        config.setdefault("output_size", 2 * int(config["n_pairs"]))
+    else:
+        config.setdefault("input_size", int(config["n_bits"]))
+        config.setdefault("output_size", int(config["n_bits"]))
     if config.get("dynamics_type") != "voltage":
         raise ValueError("This analysis assumes voltage dynamics")
     if config.get("use_biases", True):
@@ -101,6 +105,7 @@ def main() -> None:
 
     result = {
         "run_dir": str(run_dir),
+        "task": config["task"],
         "activation": config["activation"],
         "criterion": "strictly stable iff all eigenvalues of DF(0) have magnitude < 1",
         "rows": rows,
