@@ -338,6 +338,10 @@ def main() -> None:
         config = yaml.safe_load(handle)
     if config.get("task") != "flip_flop" or config.get("activation") != "Tanh":
         raise ValueError("This analysis expects the tanh flip-flop rich-learning run")
+    # Sweep run_config.yaml is written before create_datamodule mutates the
+    # in-memory training config with these derived dimensions.
+    config.setdefault("input_size", int(config["n_bits"]))
+    config.setdefault("output_size", int(config["n_bits"]))
     if config.get("dynamics_type") != "voltage":
         raise ValueError("This analysis currently assumes voltage dynamics")
     if config.get("use_biases", True):
