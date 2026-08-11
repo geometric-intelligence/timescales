@@ -29,6 +29,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--pca-geometry", type=Path, default=None)
     parser.add_argument("--pca-components", type=int, default=3)
+    parser.add_argument("--skip-pca", action="store_true")
     return parser.parse_args()
 
 
@@ -67,6 +68,7 @@ def _linearity_metrics(
     batch_size: int,
     device: torch.device,
     pca_basis: np.ndarray | None = None,
+    activation: str = "Tanh",
 ) -> dict[str, float | int]:
     recurrent = torch.as_tensor(
         linearization["recurrent"], dtype=torch.float32, device=device
@@ -112,14 +114,20 @@ def _linearity_metrics(
         for state_start in range(0, flat.shape[0], 8192):
             states = flat[state_start : state_start + 8192]
             with torch.inference_mode():
-                phi = torch.tanh(states)
+                if activation == "Tanh":
+                    phi = torch.tanh(states)
+                    delta_derivative = -(phi**2)
+                elif activation == "Identity":
+                    phi = states
+                    delta_derivative = torch.zeros_like(states)
+                else:
+                    raise ValueError(f"Unsupported activation {activation}")
                 field = (
                     -states + torch.nn.functional.linear(phi, recurrent)
                 ) * tau_inv
                 residual = (
                     torch.nn.functional.linear(phi - states, recurrent) * tau_inv
                 )
-                delta_derivative = -(phi**2)
                 jacobian_fro_sq = (
                     delta_derivative.square() * column_norm_sq
                 ).sum(dim=1)
@@ -187,8 +195,11 @@ def main() -> None:
 
     with (run_dir / "run_config.yaml").open() as handle:
         config = yaml.safe_load(handle)
-    if config.get("task") != "flip_flop" or config.get("activation") != "Tanh":
-        raise ValueError("This analysis expects the tanh flip-flop run")
+    if config.get("task") != "flip_flop" or config.get("activation") not in {
+        "Tanh",
+        "Identity",
+    }:
+        raise ValueError("This analysis expects a tanh or linear flip-flop run")
     config.setdefault("input_size", int(config["n_bits"]))
     config.setdefault("output_size", int(config["n_bits"]))
     if config.get("dynamics_type") != "voltage":
@@ -201,21 +212,28 @@ def main() -> None:
         requested_device = "cpu"
     device = torch.device(requested_device)
     inputs, _ = _trajectory_inputs(config, args.n_trajectories, args.analysis_seed)
-    pca_geometry = (
-        args.pca_geometry.resolve()
-        if args.pca_geometry is not None
-        else run_dir / "analysis" / "checkpoint_500_vs_final" / "geometry.npz"
-    )
-    with np.load(pca_geometry) as geometry:
-        pca_components = geometry["pca_components"].astype(np.float64)
-        explained_variance = geometry["pca_explained_variance_ratio"].astype(
-            np.float64
+    pca_geometry = None
+    pca_basis = None
+    pca_explained_variance = None
+    if not args.skip_pca:
+        pca_geometry = (
+            args.pca_geometry.resolve()
+            if args.pca_geometry is not None
+            else run_dir / "analysis" / "checkpoint_500_vs_final" / "geometry.npz"
         )
-    if not 1 <= args.pca_components <= pca_components.shape[0]:
-        raise ValueError(
-            f"pca-components must be between 1 and {pca_components.shape[0]}"
+        with np.load(pca_geometry) as geometry:
+            pca_components = geometry["pca_components"].astype(np.float64)
+            explained_variance = geometry["pca_explained_variance_ratio"].astype(
+                np.float64
+            )
+        if not 1 <= args.pca_components <= pca_components.shape[0]:
+            raise ValueError(
+                f"pca-components must be between 1 and {pca_components.shape[0]}"
+            )
+        pca_basis = pca_components[: args.pca_components].T
+        pca_explained_variance = float(
+            explained_variance[: args.pca_components].sum()
         )
-    pca_basis = pca_components[: args.pca_components].T
     checkpoints = _checkpoint_steps(run_dir, config)
     print(
         f"device={device} checkpoints={len(checkpoints)} "
@@ -235,16 +253,20 @@ def main() -> None:
             batch_size=args.batch_size,
             device=device,
             pca_basis=pca_basis,
+            activation=config["activation"],
         )
         row = {"step": step, "checkpoint": path.name, **metrics}
         rows.append(row)
-        print(
+        message = (
             f"  eta_field={metrics['eta_field']:.6f} "
-            f"eta_J={metrics['eta_jacobian']:.6f} "
-            f"eta_field_pca={metrics['eta_field_pca']:.6f} "
-            f"eta_J_pca={metrics['eta_jacobian_pca']:.6f}",
-            flush=True,
+            f"eta_J={metrics['eta_jacobian']:.6f}"
         )
+        if pca_basis is not None:
+            message += (
+                f" eta_field_pca={metrics['eta_field_pca']:.6f}"
+                f" eta_J_pca={metrics['eta_jacobian_pca']:.6f}"
+            )
+        print(message, flush=True)
         del model
         if device.type == "cuda":
             torch.cuda.empty_cache()
@@ -255,11 +277,10 @@ def main() -> None:
         "num_time_steps": int(inputs.shape[1]),
         "n_states_per_checkpoint": int(inputs.shape[0] * inputs.shape[1]),
         "analysis_seed": args.analysis_seed,
-        "pca_geometry": str(pca_geometry),
-        "pca_components": args.pca_components,
-        "pca_explained_variance": float(
-            explained_variance[: args.pca_components].sum()
-        ),
+        "activation": config["activation"],
+        "pca_geometry": str(pca_geometry) if pca_geometry is not None else None,
+        "pca_components": args.pca_components if pca_basis is not None else None,
+        "pca_explained_variance": pca_explained_variance,
         "rows": rows,
     }
     with out_file.open("w") as handle:
