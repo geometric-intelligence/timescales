@@ -19,7 +19,9 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--out-file", type=Path, default=None)
-    parser.add_argument("--device", default="cuda")
+    # Full eigendecompositions of these 512 x 512 Jacobians are substantially
+    # faster on the CPU in the environments where this analysis is run.
+    parser.add_argument("--device", default="cpu")
     return parser.parse_args()
 
 
