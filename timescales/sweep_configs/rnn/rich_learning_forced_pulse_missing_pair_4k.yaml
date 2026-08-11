@@ -44,6 +44,21 @@ fixed_overrides:
 
 variants:
   condition:
+    # Put the short sine run first when only one GPU is available; the longer
+    # flip-flop run will begin automatically as soon as sine completes.
+    sine_tanh_s0.08_gamma1:
+      project_name: "sine_wave"
+      task: "sine_wave"
+      n_pairs: 3
+      periods: [20.0, 50.0, 100.0]
+      init_hidden_value: 1.0
+      random_phase: false
+      num_time_steps: 100
+      dt: 1.0
+      num_val_trajectories: 200
+      activation: "Tanh"
+      output_coupling_gamma: 1.0
+
     ff_linear_forced_tau100_200_400_s0.08_gamma0.03:
       project_name: "flip_flop"
       task: "flip_flop"
@@ -57,16 +72,3 @@ variants:
       init_hidden_value: null
       activation: "Identity"
       output_coupling_gamma: 0.03
-
-    sine_tanh_s0.08_gamma1:
-      project_name: "sine_wave"
-      task: "sine_wave"
-      n_pairs: 3
-      periods: [20.0, 50.0, 100.0]
-      init_hidden_value: 1.0
-      random_phase: false
-      num_time_steps: 100
-      dt: 1.0
-      num_val_trajectories: 200
-      activation: "Tanh"
-      output_coupling_gamma: 1.0
