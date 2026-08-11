@@ -27,6 +27,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--analysis-seed", type=int, default=1729)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--pca-geometry", type=Path, default=None)
+    parser.add_argument("--pca-components", type=int, default=3)
     return parser.parse_args()
 
 
@@ -64,6 +66,7 @@ def _linearity_metrics(
     linearization: dict,
     batch_size: int,
     device: torch.device,
+    pca_basis: np.ndarray | None = None,
 ) -> dict[str, float | int]:
     recurrent = torch.as_tensor(
         linearization["recurrent"], dtype=torch.float32, device=device
@@ -81,9 +84,23 @@ def _linearity_metrics(
         device=device,
     )
 
+    basis = None
+    reduced_jacobian_norm = None
+    reduced_weighted_recurrent = None
+    if pca_basis is not None:
+        basis = torch.as_tensor(pca_basis, dtype=torch.float32, device=device)
+        reduced_jacobian = pca_basis.T @ linearization["field_jacobian"] @ pca_basis
+        reduced_jacobian_norm = float(np.linalg.norm(reduced_jacobian, ord="fro"))
+        reduced_weighted_recurrent = basis.T @ torch.as_tensor(
+            weighted_recurrent, dtype=torch.float32, device=device
+        )
+
     residual_sq = 0.0
     field_sq = 0.0
     jacobian_difference_sq = 0.0
+    projected_residual_sq = 0.0
+    projected_field_sq = 0.0
+    projected_jacobian_difference_sq = 0.0
     n_states = 0
     hidden_size = model.hidden_size
     for start in range(0, inputs.shape[0], batch_size):
@@ -106,15 +123,35 @@ def _linearity_metrics(
                 jacobian_fro_sq = (
                     delta_derivative.square() * column_norm_sq
                 ).sum(dim=1)
+                if basis is not None:
+                    projected_field = field @ basis
+                    projected_residual = residual @ basis
+                    derivative_times_basis = delta_derivative.unsqueeze(-1) * basis
+                    projected_jacobian_difference = torch.matmul(
+                        reduced_weighted_recurrent.unsqueeze(0),
+                        derivative_times_basis,
+                    )
             residual_sq += float(residual.square().sum(dtype=torch.float64).cpu())
             field_sq += float(field.square().sum(dtype=torch.float64).cpu())
             jacobian_difference_sq += float(
                 jacobian_fro_sq.sum(dtype=torch.float64).cpu()
             )
+            if basis is not None:
+                projected_residual_sq += float(
+                    projected_residual.square().sum(dtype=torch.float64).cpu()
+                )
+                projected_field_sq += float(
+                    projected_field.square().sum(dtype=torch.float64).cpu()
+                )
+                projected_jacobian_difference_sq += float(
+                    projected_jacobian_difference.square()
+                    .sum(dtype=torch.float64)
+                    .cpu()
+                )
             n_states += states.shape[0]
         del hidden, flat, input_batch
 
-    return {
+    metrics = {
         "eta_field": math.sqrt(residual_sq / max(field_sq, np.finfo(float).tiny)),
         "eta_jacobian": (
             math.sqrt(jacobian_difference_sq / n_states)
@@ -122,6 +159,20 @@ def _linearity_metrics(
         ),
         "n_states": n_states,
     }
+    if basis is not None:
+        metrics.update(
+            {
+                "eta_field_pca": math.sqrt(
+                    projected_residual_sq
+                    / max(projected_field_sq, np.finfo(float).tiny)
+                ),
+                "eta_jacobian_pca": (
+                    math.sqrt(projected_jacobian_difference_sq / n_states)
+                    / max(reduced_jacobian_norm, np.finfo(float).tiny)
+                ),
+            }
+        )
+    return metrics
 
 
 def main() -> None:
@@ -150,6 +201,21 @@ def main() -> None:
         requested_device = "cpu"
     device = torch.device(requested_device)
     inputs, _ = _trajectory_inputs(config, args.n_trajectories, args.analysis_seed)
+    pca_geometry = (
+        args.pca_geometry.resolve()
+        if args.pca_geometry is not None
+        else run_dir / "analysis" / "checkpoint_500_vs_final" / "geometry.npz"
+    )
+    with np.load(pca_geometry) as geometry:
+        pca_components = geometry["pca_components"].astype(np.float64)
+        explained_variance = geometry["pca_explained_variance_ratio"].astype(
+            np.float64
+        )
+    if not 1 <= args.pca_components <= pca_components.shape[0]:
+        raise ValueError(
+            f"pca-components must be between 1 and {pca_components.shape[0]}"
+        )
+    pca_basis = pca_components[: args.pca_components].T
     checkpoints = _checkpoint_steps(run_dir, config)
     print(
         f"device={device} checkpoints={len(checkpoints)} "
@@ -168,12 +234,15 @@ def main() -> None:
             linearization=linearization,
             batch_size=args.batch_size,
             device=device,
+            pca_basis=pca_basis,
         )
         row = {"step": step, "checkpoint": path.name, **metrics}
         rows.append(row)
         print(
             f"  eta_field={metrics['eta_field']:.6f} "
-            f"eta_J={metrics['eta_jacobian']:.6f}",
+            f"eta_J={metrics['eta_jacobian']:.6f} "
+            f"eta_field_pca={metrics['eta_field_pca']:.6f} "
+            f"eta_J_pca={metrics['eta_jacobian_pca']:.6f}",
             flush=True,
         )
         del model
@@ -186,6 +255,11 @@ def main() -> None:
         "num_time_steps": int(inputs.shape[1]),
         "n_states_per_checkpoint": int(inputs.shape[0] * inputs.shape[1]),
         "analysis_seed": args.analysis_seed,
+        "pca_geometry": str(pca_geometry),
+        "pca_components": args.pca_components,
+        "pca_explained_variance": float(
+            explained_variance[: args.pca_components].sum()
+        ),
         "rows": rows,
     }
     with out_file.open("w") as handle:
