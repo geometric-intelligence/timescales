@@ -515,3 +515,44 @@ def test_forced_pulse_missing_pair_sweep_completes_activation_cross():
             * config["val_every_n_steps"]
             == 100
         )
+
+
+def test_sine_tanh_seed_replication_sweep_has_two_conditions_and_three_seeds():
+    project_root = Path(__file__).parents[1]
+    sweep_path = (
+        project_root
+        / "timescales"
+        / "sweep_configs"
+        / "rnn"
+        / "rich_learning_sine_tanh_seed_replication_4k.yaml"
+    )
+    with sweep_path.open() as f:
+        sweep = yaml.safe_load(f)
+    with (project_root / "timescales" / sweep["base_config"]).open() as f:
+        sweep["_base_config"] = yaml.safe_load(f)
+
+    configs = generate_experiment_configs(sweep)
+    assert sweep["n_seeds"] == 3
+    assert len(configs) == 2
+    by_name = dict(configs)
+
+    best = by_name["sine_tanh_s1_gamma0.03"]
+    comparison = by_name["sine_tanh_s0.08_gamma1"]
+    assert best["wrec_init_scale"] == pytest.approx(1.0)
+    assert best["output_coupling_gamma"] == pytest.approx(0.03)
+    assert comparison["wrec_init_scale"] == pytest.approx(0.08)
+    assert comparison["output_coupling_gamma"] == pytest.approx(1.0)
+
+    for config in by_name.values():
+        assert config["task"] == "sine_wave"
+        assert config["activation"] == "Tanh"
+        assert config["periods"] == pytest.approx([20.0, 50.0, 100.0])
+        assert config["dt"] == pytest.approx(1.0)
+        assert config["num_time_steps"] == 100
+        assert config["wrec_init"] == "normal_scaled"
+        assert config["max_steps"] == 4000
+        assert (
+            config["save_checkpoint_every_n_epochs"]
+            * config["val_every_n_steps"]
+            == 100
+        )

@@ -1,0 +1,65 @@
+# Three-seed replication of two full-rank tanh sine-wave regimes.
+#
+# This contrasts the previously best complete tanh condition (s=1, gamma=.03)
+# with the checkpoint-rich comparison condition (s=.08, gamma=1).  All task,
+# optimizer, horizon, and checkpoint settings are held fixed across conditions.
+
+base_config: "configs/rnn/flip_flop_hetero.yaml"
+n_seeds: 3
+seeds_outermost: true
+
+naming:
+  format: "{condition}"
+
+fixed_overrides:
+  project_name: "sine_wave"
+  task: "sine_wave"
+  n_pairs: 3
+  periods: [20.0, 50.0, 100.0]
+  init_hidden_value: 1.0
+  random_phase: false
+  num_time_steps: 100
+  dt: 1.0
+  num_val_trajectories: 200
+
+  hidden_size: 512
+  activation: "Tanh"
+  recurrent_gain: 0.5
+  recurrent_parameterization: "clark"
+  wrec_init: "normal_scaled"
+  zero_diag_wrec: false
+  use_biases: false
+  dynamics_type: "voltage"
+
+  optimizer_name: "adam"
+  learning_rate: 0.001
+  use_lr_scheduler: false
+  lr_scheduler_gamma: 1.0
+  weight_decay: 0.0
+  clark_loss_scaling: true
+
+  max_steps: 4000
+  val_every_n_steps: 10
+  batch_size: 200
+  num_workers: 4
+
+  # Ten optimizer steps per epoch gives one checkpoint every 100 steps.
+  save_checkpoint_every_n_epochs: 10
+
+  track_tau_trajectory: false
+  track_spectral_snapshots: true
+  track_spectral_trajectory: false
+  track_gradients: true
+  grad_log_every_n_steps: 10
+  grad_track_per_weight_matrix: true
+  track_recurrent_restructuring: true
+
+variants:
+  condition:
+    sine_tanh_s1_gamma0.03:
+      wrec_init_scale: 1.0
+      output_coupling_gamma: 0.03
+
+    sine_tanh_s0.08_gamma1:
+      wrec_init_scale: 0.08
+      output_coupling_gamma: 1.0
