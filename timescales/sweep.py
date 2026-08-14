@@ -18,6 +18,7 @@ import itertools
 import subprocess
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from pathlib import Path
 from typing import Any
 import numpy as np
 
@@ -45,11 +46,21 @@ def load_sweep_config(sweep_file: str) -> dict:
     with open(sweep_file, "r") as f:
         sweep_config = yaml.safe_load(f)
 
-    base_config_path = sweep_config["base_config"]
-    if not os.path.exists(base_config_path):
-        raise FileNotFoundError(f"Base config file not found: {base_config_path}")
+    authored_base_path = Path(sweep_config["base_config"])
+    base_config_path = authored_base_path
+    if not base_config_path.exists():
+        # Sweep YAMLs live under ``timescales/sweep_configs/<family>`` while
+        # their authored base paths are relative to the package directory.
+        package_relative = Path(sweep_file).resolve().parents[2] / authored_base_path
+        if package_relative.exists():
+            base_config_path = package_relative
+        else:
+            raise FileNotFoundError(
+                f"Base config file not found: {authored_base_path} "
+                f"(also tried {package_relative})"
+            )
 
-    with open(base_config_path, "r") as f:
+    with base_config_path.open("r") as f:
         base_config = yaml.safe_load(f)
 
     sweep_config["_base_config"] = base_config
