@@ -215,13 +215,16 @@ class MultiscaleHMMOnlineDataset(IterableDataset):
         timescales: list[float],
         observation_flip_probability: float,
         seed: int,
+        iterator_start: int = 0,
     ) -> None:
+        if iterator_start < 0:
+            raise ValueError("iterator_start must be nonnegative")
         self.num_time_steps = num_time_steps
         self.batch_size = batch_size
         self.timescales = timescales
         self.observation_flip_probability = observation_flip_probability
         self.seed = seed
-        self._iterator_count = 0
+        self._iterator_count = int(iterator_start)
 
     def __iter__(self):
         worker = torch.utils.data.get_worker_info()
@@ -264,6 +267,7 @@ class MultiscaleHMMDataModule(L.LightningDataModule):
         seed: int = 0,
         validation_seed: int = 0,
         prediction_mode: str = "last",
+        train_iterator_start: int = 0,
     ) -> None:
         super().__init__()
         if not 0.0 <= observation_flip_probability <= 0.5:
@@ -277,6 +281,9 @@ class MultiscaleHMMDataModule(L.LightningDataModule):
         self.num_workers = int(num_workers)
         self.seed = int(seed)
         self.validation_seed = int(validation_seed)
+        if train_iterator_start < 0:
+            raise ValueError("train_iterator_start must be nonnegative")
+        self.train_iterator_start = int(train_iterator_start)
         if prediction_mode not in {"all", "last"}:
             raise ValueError("prediction_mode must be 'all' or 'last'")
         self.prediction_mode = prediction_mode
@@ -301,6 +308,7 @@ class MultiscaleHMMDataModule(L.LightningDataModule):
             timescales=self.timescales,
             observation_flip_probability=self.observation_flip_probability,
             seed=self.seed,
+            iterator_start=self.train_iterator_start,
         )
 
     def train_dataloader(self) -> DataLoader:

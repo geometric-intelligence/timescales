@@ -5,11 +5,37 @@ import pytest
 
 from timescales.datamodules.multiscale_hmm import (
     MultiscaleHMMDataModule,
+    MultiscaleHMMOnlineDataset,
     estimate_bayes_mse,
     generate_multiscale_hmm_sequences,
     optimal_linear_predictor,
     timescale_to_pole,
 )
+
+
+def test_online_dataset_can_resume_from_an_iterator_offset():
+    dataset = MultiscaleHMMOnlineDataset(
+        num_time_steps=8,
+        batch_size=2,
+        timescales=[4.0],
+        observation_flip_probability=0.15,
+        seed=3,
+        iterator_start=17,
+    )
+    assert dataset._iterator_count == 17
+    iterator = iter(dataset)
+    next(iterator)
+    assert dataset._iterator_count == 18
+
+    with pytest.raises(ValueError, match="nonnegative"):
+        MultiscaleHMMOnlineDataset(
+            num_time_steps=8,
+            batch_size=2,
+            timescales=[4.0],
+            observation_flip_probability=0.15,
+            seed=3,
+            iterator_start=-1,
+        )
 
 
 def test_generator_shapes_values_and_alignment():

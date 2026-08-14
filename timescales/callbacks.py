@@ -9,7 +9,11 @@ import numpy as np
 
 
 class LossLoggerCallback(L.Callback):
-    def __init__(self, save_dir: str):
+    def __init__(
+        self,
+        save_dir: str,
+        initial_curve_path: str | None = None,
+    ):
         self.save_dir = save_dir
 
         self.train_losses: list[float] = []
@@ -22,6 +26,47 @@ class LossLoggerCallback(L.Callback):
 
         self.val_losses_per_bit: dict[str, list[float]] = {}
         self.val_accuracies_per_bit: dict[str, list[float]] = {}
+
+        if initial_curve_path is not None:
+            self._load_initial_curve(initial_curve_path)
+
+    def _load_initial_curve(self, path: str) -> None:
+        """Seed a continuation run with an earlier run's logged curve."""
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"initial training curve not found: {path}")
+        with open(path) as f:
+            data = json.load(f)
+
+        list_fields = (
+            "steps",
+            "train_losses",
+            "val_losses",
+            "train_objectives",
+            "val_objectives",
+            "train_accuracies",
+            "val_accuracies",
+        )
+        for field in list_fields:
+            values = data.get(field, [])
+            if not isinstance(values, list):
+                raise ValueError(f"{field} must be a list in {path}")
+            setattr(self, field, list(values))
+
+        dict_fields = (
+            "val_losses_per_bit",
+            "val_accuracies_per_bit",
+        )
+        for field in dict_fields:
+            values = data.get(field, {})
+            if not isinstance(values, dict) or any(
+                not isinstance(series, list) for series in values.values()
+            ):
+                raise ValueError(f"{field} must map names to lists in {path}")
+            setattr(
+                self,
+                field,
+                {name: list(series) for name, series in values.items()},
+            )
 
     def on_train_epoch_end(self, trainer, pl_module):
         train_loss = trainer.logged_metrics.get("train_loss_epoch", None)

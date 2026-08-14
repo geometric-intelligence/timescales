@@ -75,6 +75,74 @@ def _write_completion_marker(run_dir: str, result: dict) -> None:
         yaml.dump(result, f, default_flow_style=False)
 
 
+def _prepare_checkpoint_continuation(
+    config: dict,
+) -> tuple[str | None, dict | None]:
+    """Resolve a Lightning checkpoint and infer continuation bookkeeping.
+
+    ``max_steps`` remains the total desired horizon, not an additional-step
+    count.  For online multiscale-HMM data, the iterator offset is advanced to
+    the next pseudo-epoch so a resumed job does not replay its original data.
+    The preceding loss curve is also carried into the new run by default.
+    """
+    checkpoint_path = config.get("resume_from_checkpoint")
+    if checkpoint_path is None:
+        return None, None
+
+    checkpoint_path = os.path.expanduser(str(checkpoint_path))
+    if not os.path.isabs(checkpoint_path):
+        checkpoint_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), checkpoint_path)
+        )
+    if not os.path.isfile(checkpoint_path):
+        raise FileNotFoundError(f"resume checkpoint not found: {checkpoint_path}")
+
+    checkpoint = torch.load(
+        checkpoint_path,
+        map_location="cpu",
+        weights_only=False,
+    )
+    source_step = int(checkpoint.get("global_step", 0))
+    source_epoch = int(checkpoint.get("epoch", -1))
+    if config.get("max_steps") is not None and int(config["max_steps"]) <= source_step:
+        raise ValueError(
+            f"max_steps={config['max_steps']} must exceed resumed global_step="
+            f"{source_step}"
+        )
+
+    config["resume_from_checkpoint"] = checkpoint_path
+    if config.get("task") == "multiscale_hmm":
+        config.setdefault("train_iterator_start", source_epoch + 1)
+
+    initial_curve_path = config.get("initial_training_curve_path")
+    if initial_curve_path is None and config.get("prepend_training_curve", True):
+        source_run_dir = os.path.dirname(os.path.dirname(checkpoint_path))
+        candidate = os.path.join(source_run_dir, "training_losses.json")
+        if os.path.isfile(candidate):
+            initial_curve_path = candidate
+    elif initial_curve_path is not None:
+        initial_curve_path = os.path.expanduser(str(initial_curve_path))
+        if not os.path.isabs(initial_curve_path):
+            initial_curve_path = os.path.abspath(
+                os.path.join(os.path.dirname(__file__), initial_curve_path)
+            )
+
+    if initial_curve_path is not None:
+        if not os.path.isfile(initial_curve_path):
+            raise FileNotFoundError(
+                f"initial training curve not found: {initial_curve_path}"
+            )
+        config["initial_training_curve_path"] = initial_curve_path
+
+    return checkpoint_path, {
+        "checkpoint": checkpoint_path,
+        "source_global_step": source_step,
+        "source_epoch": source_epoch,
+        "train_iterator_start": config.get("train_iterator_start"),
+        "initial_training_curve_path": initial_curve_path,
+    }
+
+
 # ============================================================================
 # Datamodule factory (shared across all architectures)
 # ============================================================================
@@ -158,6 +226,7 @@ def create_datamodule(config: dict):
             seed=config.get("seed", 0),
             validation_seed=config.get("validation_seed", 0),
             prediction_mode=config.get("prediction_mode", "last"),
+            train_iterator_start=config.get("train_iterator_start", 0),
         )
         config["input_size"] = datamodule.input_size
         config["output_size"] = datamodule.output_size
@@ -304,7 +373,10 @@ def _build_callbacks(config: dict, run_dir: str, datamodule=None):
         mode="min",
         save_last=True,
     )
-    loss_logger = LossLoggerCallback(save_dir=run_dir)
+    loss_logger = LossLoggerCallback(
+        save_dir=run_dir,
+        initial_curve_path=config.get("initial_training_curve_path"),
+    )
     callbacks = [checkpoint_callback, loss_logger]
 
     is_rnn = config.get("model_type") in {"rnn", "multitimescale"}
@@ -430,6 +502,14 @@ def single_seed(config: dict) -> dict:
             "skipped": True,
         }
 
+    resume_checkpoint, resume_info = _prepare_checkpoint_continuation(config)
+    if resume_info is not None:
+        print(
+            "  Continuing from "
+            f"step={resume_info['source_global_step']}, "
+            f"epoch={resume_info['source_epoch']}: {resume_checkpoint}"
+        )
+
     wandb_logger = WandbLogger(
         project=config["project_name"],
         name=wandb_name,
@@ -475,6 +555,15 @@ def single_seed(config: dict) -> dict:
     create_directories()
 
     @rank_zero_only
+    def save_resume_info():
+        if resume_info is None:
+            return
+        with open(os.path.join(run_dir, "resume_info.json"), "w") as f:
+            json.dump(resume_info, f, indent=2)
+
+    save_resume_info()
+
+    @rank_zero_only
     def save_task_metadata():
         metadata_fn = getattr(datamodule, "analysis_metadata", None)
         if metadata_fn is None:
@@ -495,7 +584,8 @@ def single_seed(config: dict) -> dict:
             "global_step": 0,
             "hyper_parameters": dict(config),
         }, os.path.join(checkpoints_dir, "untrained.ckpt"))
-    save_untrained_model()
+    if resume_checkpoint is None:
+        save_untrained_model()
 
     # Callbacks
     callbacks = _build_callbacks(config, run_dir, datamodule=datamodule)
@@ -556,7 +646,12 @@ def single_seed(config: dict) -> dict:
         print("skip_training=True — saving untrained network only.")
     else:
         print("Training…")
-        trainer.fit(lightning_module, train_loader, val_loader)
+        trainer.fit(
+            lightning_module,
+            train_loader,
+            val_loader,
+            ckpt_path=resume_checkpoint,
+        )
         print("Training complete!")
 
         if hasattr(lightning_module, "trainer") and lightning_module.trainer.callback_metrics:
