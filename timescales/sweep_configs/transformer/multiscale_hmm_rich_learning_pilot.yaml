@@ -1,0 +1,22 @@
+# One-seed discovery sweep. Replicate selected cells after inspecting whether
+# all three task components learn within the 4,000-step horizon.
+
+base_config: "configs/transformer/multiscale_hmm.yaml"
+n_seeds: 1
+seeds_outermost: true
+
+naming:
+  format: "{architecture}_s{residual_init_scale}_gamma{output_coupling_gamma}"
+
+variants:
+  architecture:
+    direct_linear:
+      architecture: "linear_fir"
+    static_linear:
+      architecture: "static_linear_attention"
+    nonlinear:
+      architecture: "softmax_tanh"
+
+grid:
+  residual_init_scale: [0.03, 0.08, 0.2]
+  output_coupling_gamma: [0.03, 0.1, 1.0]

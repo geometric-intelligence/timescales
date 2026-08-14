@@ -1,8 +1,9 @@
 """
-Unified training entry point for the RNN model.
+Unified training entry point for sequence models.
 
-The RNN has per-unit time constants; model_type in config selects the factory
-("rnn"), leaving room to register additional architectures later.
+``model_type`` selects an architecture factory (currently RNNs and small
+transformer/linear-sequence models) while tasks share the same datamodule,
+artifact, checkpoint, and sweep machinery.
 
 Usage:
     python train.py --config configs/rnn/flip_flop.yaml
@@ -36,6 +37,7 @@ from timescales.datamodules import (
     NullDataModule,
     SineWaveDataModule,
     CumulativeVectorAdditionDataModule,
+    MultiscaleHMMDataModule,
 )
 from timescales import run_ids
 from timescales import convergence as convergence_metrics
@@ -140,6 +142,27 @@ def create_datamodule(config: dict):
         config["input_size"] = datamodule.input_size
         config["output_size"] = datamodule.output_size
 
+    elif task == "multiscale_hmm":
+        datamodule = MultiscaleHMMDataModule(
+            n_components=config.get("n_components", 3),
+            timescales=config.get("timescales", [8.0, 32.0, 128.0]),
+            observation_flip_probability=config.get(
+                "observation_flip_probability", 0.15
+            ),
+            num_time_steps=config.get(
+                "context_length", config.get("num_time_steps", 256)
+            ),
+            num_val_trajectories=config.get("num_val_trajectories", 1024),
+            batch_size=config["batch_size"],
+            num_workers=config["num_workers"],
+            seed=config.get("seed", 0),
+            validation_seed=config.get("validation_seed", 0),
+            prediction_mode=config.get("prediction_mode", "last"),
+        )
+        config["input_size"] = datamodule.input_size
+        config["output_size"] = datamodule.output_size
+        config["context_length"] = datamodule.num_time_steps
+
     elif task == "null":
         datamodule = NullDataModule(
             input_size=config.get("input_size", 1),
@@ -223,9 +246,47 @@ def _create_rnn_model(config: dict):
     return model, lightning_module
 
 
+def _create_transformer_model(config: dict):
+    from timescales.transformers import (
+        TransformerSequenceLightning,
+        create_sequence_model,
+    )
+
+    model = create_sequence_model(
+        architecture=config["architecture"],
+        input_size=config["input_size"],
+        output_size=config["output_size"],
+        d_model=config.get("d_model", 48),
+        n_heads=config.get("n_heads", 3),
+        max_context_length=config.get(
+            "max_context_length", config["context_length"]
+        ),
+        d_mlp=config.get("d_mlp", 96),
+        residual_init_scale=config.get("residual_init_scale", 0.08),
+        residual_gain=config.get("residual_gain", 1.0),
+        attention_logit_scale=config.get("attention_logit_scale", 1.0),
+        output_coupling_gamma=config.get("output_coupling_gamma"),
+    )
+    lightning_module = TransformerSequenceLightning(
+        model=model,
+        learning_rate=config["learning_rate"],
+        weight_decay=config.get("weight_decay", 0.0),
+        optimizer_name=config.get("optimizer_name", "adam"),
+        use_lr_scheduler=config.get("use_lr_scheduler", False),
+        lr_step_size=config.get("lr_step_size", 1000),
+        lr_scheduler_gamma=config.get("lr_scheduler_gamma", 1.0),
+        sgld_beta=config.get("sgld_beta", 2000.0),
+        sgld_add_noise=config.get("sgld_add_noise", True),
+        clark_loss_scaling=config.get("clark_loss_scaling", True),
+        prediction_mode=config.get("prediction_mode", "last"),
+    )
+    return model, lightning_module
+
+
 MODEL_FACTORIES = {
     "rnn": _create_rnn_model,
     "multitimescale": _create_rnn_model,  # backward compat
+    "transformer": _create_transformer_model,
 }
 
 
@@ -246,7 +307,9 @@ def _build_callbacks(config: dict, run_dir: str, datamodule=None):
     loss_logger = LossLoggerCallback(save_dir=run_dir)
     callbacks = [checkpoint_callback, loss_logger]
 
-    if config.get("track_tau_trajectory", True):
+    is_rnn = config.get("model_type") in {"rnn", "multitimescale"}
+
+    if config.get("track_tau_trajectory", is_rnn) and is_rnn:
         callbacks.append(TauTrajectoryCallback(save_dir=run_dir))
 
     if config.get("track_spectral_snapshots", True) and config.get("model_type") == "rnn":
@@ -272,8 +335,18 @@ def _build_callbacks(config: dict, run_dir: str, datamodule=None):
             track_per_weight_matrix=config.get("grad_track_per_weight_matrix", True),
         ))
 
-    if config.get("track_recurrent_restructuring", False):
+    if config.get("track_recurrent_restructuring", False) and is_rnn:
         callbacks.append(RecurrentRestructuringCallback(save_dir=run_dir))
+
+    checkpoint_every_n_steps = config.get("save_checkpoint_every_n_steps")
+    if checkpoint_every_n_steps is not None and checkpoint_every_n_steps > 0:
+        callbacks.append(ModelCheckpoint(
+            dirpath=os.path.join(run_dir, "checkpoints"),
+            filename="checkpoint-step={step:06d}",
+            every_n_train_steps=int(checkpoint_every_n_steps),
+            save_top_k=-1,
+            auto_insert_metric_name=False,
+        ))
 
     checkpoint_every_n = config.get("save_checkpoint_every_n_epochs", None)
     if checkpoint_every_n is not None and checkpoint_every_n > 0:
@@ -336,6 +409,8 @@ def single_seed(config: dict) -> dict:
         wandb_job_type = "single_run"
 
     wandb_tags = [model_type]
+    if config.get("architecture"):
+        wandb_tags.append(config["architecture"])
     if config.get("activation"):
         wandb_tags.append(config["activation"])
     if "experiment_name" in config:
@@ -398,6 +473,16 @@ def single_seed(config: dict) -> dict:
     def create_directories():
         os.makedirs(checkpoints_dir, exist_ok=True)
     create_directories()
+
+    @rank_zero_only
+    def save_task_metadata():
+        metadata_fn = getattr(datamodule, "analysis_metadata", None)
+        if metadata_fn is None:
+            return
+        with open(os.path.join(run_dir, "task_metadata.json"), "w") as f:
+            json.dump(metadata_fn(), f, indent=2)
+
+    save_task_metadata()
 
     _dump_rng_state(run_dir, tag="init")
 
@@ -525,7 +610,7 @@ def single_seed(config: dict) -> dict:
 # ============================================================================
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train an RNN (any architecture)")
+    parser = argparse.ArgumentParser(description="Train a sequence model")
     parser.add_argument(
         "--config", type=str, default="configs/rnn/flip_flop.yaml",
         help="Path to config file (relative to this script's directory)",

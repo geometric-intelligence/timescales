@@ -1,0 +1,43 @@
+project_name: "transformer_timescales_smoke"
+model_type: "transformer"
+task: "multiscale_hmm"
+architecture: "static_linear_attention"
+seed: 0
+
+accelerator: "cpu"
+devices: 1
+
+n_components: 3
+timescales: [4.0, 8.0, 16.0]
+observation_flip_probability: 0.15
+context_length: 32
+num_val_trajectories: 32
+validation_seed: 0
+prediction_mode: "last"
+
+d_model: 12
+n_heads: 3
+d_mlp: 24
+max_context_length: 32
+residual_init_scale: 0.08
+residual_gain: 1.0
+attention_logit_scale: 1.0
+output_coupling_gamma: 0.1
+
+optimizer_name: "adam"
+learning_rate: 0.001
+weight_decay: 0.0
+use_lr_scheduler: false
+clark_loss_scaling: true
+
+max_steps: 20
+val_every_n_steps: 5
+batch_size: 8
+num_workers: 0
+save_checkpoint_every_n_steps: 10
+
+track_tau_trajectory: false
+track_spectral_snapshots: false
+track_spectral_trajectory: false
+track_recurrent_restructuring: false
+track_gradients: false

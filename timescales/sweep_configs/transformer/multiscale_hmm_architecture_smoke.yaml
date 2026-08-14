@@ -1,0 +1,19 @@
+base_config: "configs/transformer/multiscale_hmm_smoke.yaml"
+n_seeds: 1
+seeds_outermost: true
+
+naming:
+  format: "{architecture}"
+
+variants:
+  architecture:
+    linear_fir:
+      architecture: "linear_fir"
+    static_linear:
+      architecture: "static_linear_attention"
+    linear_attention:
+      architecture: "linear_attention"
+    softmax_attention:
+      architecture: "softmax_attention"
+    softmax_tanh:
+      architecture: "softmax_tanh"

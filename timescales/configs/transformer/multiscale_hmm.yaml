@@ -1,0 +1,53 @@
+# Multiscale noisy-symbol prediction with a small residual-stream sequence model.
+
+project_name: "transformer_timescales"
+model_type: "transformer"
+task: "multiscale_hmm"
+architecture: "static_linear_attention"
+seed: 0
+
+accelerator: "gpu"
+devices: "auto"
+
+# Three independent binary latent features form an eight-symbol vocabulary.
+n_components: 3
+timescales: [8.0, 32.0, 128.0]
+observation_flip_probability: 0.15
+context_length: 256
+num_val_trajectories: 1024
+validation_seed: 0
+prediction_mode: "last"
+
+# Model hierarchy parameters.
+d_model: 48
+n_heads: 3
+d_mlp: 96
+max_context_length: 256
+residual_init_scale: 0.08
+residual_gain: 1.0
+attention_logit_scale: 1.0
+output_coupling_gamma: 0.1
+
+# Optimizer and Clark-style reported-loss/objective separation.
+optimizer_name: "adam"
+learning_rate: 0.001
+weight_decay: 0.0
+use_lr_scheduler: false
+lr_step_size: 1000
+lr_scheduler_gamma: 1.0
+clark_loss_scaling: true
+
+# Step-budget training.
+max_steps: 4000
+val_every_n_steps: 10
+batch_size: 64
+num_workers: 4
+gradient_clip_val: null
+
+# Artifacts. Expensive residual/Jacobian analyses are run post hoc.
+save_checkpoint_every_n_steps: 100
+track_tau_trajectory: false
+track_spectral_snapshots: false
+track_spectral_trajectory: false
+track_recurrent_restructuring: false
+track_gradients: false

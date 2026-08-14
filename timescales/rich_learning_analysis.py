@@ -49,6 +49,11 @@ CONFIG_FIELDS = (
     "recurrent_gain",
     "hidden_size",
     "max_steps",
+    "architecture",
+    "residual_init_scale",
+    "residual_gain",
+    "attention_logit_scale",
+    "context_length",
 )
 
 RESTRUCTURING_FIELDS = (
@@ -189,7 +194,11 @@ def compute_curve_shape(
     }
 
 
-def _component_curves(curve: dict[str, Any], task: str) -> list[np.ndarray]:
+def _component_curves(
+    curve: dict[str, Any],
+    task: str,
+    component_groups: list[list[int]] | None = None,
+) -> list[np.ndarray]:
     channels = curve.get("val_losses_per_bit") or {}
     ordered = []
     channel_index = 0
@@ -197,6 +206,13 @@ def _component_curves(curve: dict[str, Any], task: str) -> list[np.ndarray]:
         ordered.append(np.asarray(channels[f"channel_{channel_index}"], dtype=float))
         channel_index += 1
 
+    if component_groups is not None:
+        grouped = []
+        for group in component_groups:
+            valid = [ordered[index] for index in group if index < len(ordered)]
+            if valid:
+                grouped.append(np.mean(np.stack(valid, axis=0), axis=0))
+        return grouped
     if task == "sine_wave":
         return [
             (ordered[i] + ordered[i + 1]) / 2.0
@@ -206,12 +222,15 @@ def _component_curves(curve: dict[str, Any], task: str) -> list[np.ndarray]:
 
 
 def compute_component_timing(
-    curve: dict[str, Any], task: str
+    curve: dict[str, Any],
+    task: str,
+    component_groups: list[list[int]] | None = None,
 ) -> dict[str, float | int | None]:
     """Describe acquisition timing for bits or sine/cosine frequency pairs."""
     steps = curve.get("steps") or []
     component_shapes = [
-        compute_curve_shape(steps, losses) for losses in _component_curves(curve, task)
+        compute_curve_shape(steps, losses)
+        for losses in _component_curves(curve, task, component_groups)
     ]
 
     result: dict[str, float | int | None] = {
@@ -278,11 +297,33 @@ def analyze_run(run_dir: Path) -> dict[str, Any]:
     """Analyze one ``<experiment>/seed_<n>`` directory."""
     curve = json.loads((run_dir / "training_losses.json").read_text())
     config = _load_selected_config(run_dir / "run_config.yaml")
+    metadata_path = run_dir / "task_metadata.json"
+    metadata = json.loads(metadata_path.read_text()) if metadata_path.exists() else {}
+    component_groups = metadata.get("component_groups")
+    component_timing = compute_component_timing(
+        curve,
+        str(config.get("task", "")),
+        component_groups,
+    )
+    for index, reference in enumerate(metadata.get("linear_reference_losses", [])):
+        component_timing[f"component_{index}_linear_reference_loss"] = reference
+        final_loss = component_timing.get(f"component_{index}_final_loss")
+        if final_loss is not None and reference > 0:
+            component_timing[f"component_{index}_final_to_linear_ratio"] = (
+                final_loss / reference
+            )
+    for index, reference in enumerate(metadata.get("bayes_reference_losses", [])):
+        component_timing[f"component_{index}_bayes_reference_loss"] = reference
+        final_loss = component_timing.get(f"component_{index}_final_loss")
+        if final_loss is not None and reference > 0:
+            component_timing[f"component_{index}_final_to_bayes_ratio"] = (
+                final_loss / reference
+            )
     row: dict[str, Any] = {
         "run_dir": str(run_dir),
         **config,
         **compute_curve_shape(curve.get("steps") or [], curve.get("val_losses") or []),
-        **compute_component_timing(curve, str(config.get("task", ""))),
+        **component_timing,
         **_load_final_restructuring(run_dir / "recurrent_restructuring.json"),
     }
     return row
@@ -309,7 +350,7 @@ def write_metrics(rows: list[dict[str, Any]], output_dir: Path) -> None:
             "t10_t50_t90": "first persistent crossing of 10/50/90% of observed log-loss improvement",
             "drop_concentration_top_10pct": "fraction of downward motion in the largest 10% of validation-interval drops",
             "tail": "last 20% of the observed training horizon",
-            "component": "one bit for flip-flop; adjacent sine/cosine output pair for sine-wave",
+            "component": "task_metadata component_groups when available; otherwise one bit for flip-flop or adjacent sine/cosine pair",
         },
         "rows": rows,
     }

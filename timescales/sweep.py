@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Unified parameter sweep runner for all RNN architectures.
+Unified parameter sweep runner for all sequence-model architectures.
 
 model_type in the config YAML determines which architecture is trained.
 
