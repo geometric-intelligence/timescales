@@ -22,6 +22,13 @@ from pathlib import Path
 from typing import Any
 import numpy as np
 
+# Prefer the checkout containing this launcher over any editable installation
+# associated with a different worktree.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPOSITORY_ROOT = os.path.dirname(_SCRIPT_DIR)
+if _REPOSITORY_ROOT not in sys.path:
+    sys.path.insert(0, _REPOSITORY_ROOT)
+
 from timescales import run_ids
 
 

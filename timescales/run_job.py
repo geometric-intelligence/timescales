@@ -12,7 +12,14 @@ import sys
 import yaml
 import argparse
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+script_dir = os.path.dirname(os.path.abspath(__file__))
+repository_root = os.path.dirname(script_dir)
+# Prefer the checkout containing this launcher over an editable installation
+# that may point at a different worktree.  Keep script_dir available for the
+# historical top-level ``from train import ...`` import below.
+sys.path.insert(0, repository_root)
+if script_dir not in sys.path:
+    sys.path.insert(1, script_dir)
 
 from train import single_seed
 
