@@ -1,0 +1,28 @@
+# Short full-context GPU benchmark for the three endpoint architectures.
+# This validates memory/runtime and gives the first nontrivial learning curves
+# before committing to the 27-cell 4,000-step discovery grid.
+
+base_config: "configs/transformer/multiscale_hmm.yaml"
+n_seeds: 1
+seeds_outermost: true
+
+naming:
+  format: "{architecture}_central"
+
+fixed_overrides:
+  residual_init_scale: 0.08
+  output_coupling_gamma: 0.1
+  max_steps: 200
+  val_every_n_steps: 20
+  batch_size: 32
+  num_val_trajectories: 256
+  save_checkpoint_every_n_steps: 100
+
+variants:
+  architecture:
+    direct_linear:
+      architecture: "linear_fir"
+    static_linear:
+      architecture: "static_linear_attention"
+    nonlinear:
+      architecture: "softmax_tanh"

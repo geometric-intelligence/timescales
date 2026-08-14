@@ -27,3 +27,17 @@ def test_rich_learning_pilot_contains_27_conditions():
     experiments = generate_experiment_configs(sweep)
     assert len(experiments) == 27
     assert {config["model_type"] for _, config in experiments} == {"transformer"}
+
+
+def test_endpoint_benchmark_contains_three_central_conditions():
+    root = Path(__file__).parents[1]
+    path = root / "timescales/sweep_configs/transformer/multiscale_hmm_endpoint_benchmark.yaml"
+    sweep = load_sweep_config(str(path))
+    experiments = generate_experiment_configs(sweep)
+    assert len(experiments) == 3
+    assert {config["architecture"] for _, config in experiments} == {
+        "linear_fir",
+        "static_linear_attention",
+        "softmax_tanh",
+    }
+    assert {config["max_steps"] for _, config in experiments} == {200}
