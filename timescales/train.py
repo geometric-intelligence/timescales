@@ -132,6 +132,15 @@ def _prepare_checkpoint_continuation(
             raise FileNotFoundError(
                 f"initial training curve not found: {initial_curve_path}"
             )
+        with open(initial_curve_path) as f:
+            initial_curve = json.load(f)
+        initial_steps = initial_curve.get("steps", [])
+        if initial_steps and int(initial_steps[-1]) > source_step:
+            raise ValueError(
+                "initial training curve extends beyond the resume checkpoint: "
+                f"curve ends at step {initial_steps[-1]}, checkpoint is at "
+                f"step {source_step}"
+            )
         config["initial_training_curve_path"] = initial_curve_path
 
     return checkpoint_path, {
